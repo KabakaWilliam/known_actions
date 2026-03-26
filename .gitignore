@@ -39,3 +39,4 @@ test_site/.vercel
 # typescript
 test_site/*.tsbuildinfo
 test_site/next-env.d.ts
+.env
