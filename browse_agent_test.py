@@ -17,40 +17,62 @@ client_kwargs = {"api_key": openai_api_key}
 client = OpenAI(**client_kwargs)
 
 def handle_computer_actions(page, actions):
-    # Key mapping from OpenAI format to Playwright format
+    # Mapping from OpenAI key names to Playwright canonical names
+    # Based on Playwright's keyboard.press() - see: https://playwright.dev/python/docs/api/class-keyboard#keyboard-press
     key_map = {
+        # Modifier keys
         "CTRL": "Control",
+        "CONTROL": "Control",
         "COMMAND": "Meta",
         "CMD": "Meta",
         "ALT": "Alt",
         "SHIFT": "Shift",
+        
+        # Special characters
         "SPACE": " ",
         "ENTER": "Enter",
+        "RETURN": "Enter",
         "TAB": "Tab",
         "ESCAPE": "Escape",
+        "ESC": "Escape",
+        
+        # Editing keys
         "BACKSPACE": "Backspace",
         "DELETE": "Delete",
+        "DEL": "Delete",
         "INSERT": "Insert",
+        "INS": "Insert",
+        
+        # Navigation keys
+        "ARROWUP": "ArrowUp",
+        "UP": "ArrowUp",
+        "ARROWDOWN": "ArrowDown",
+        "DOWN": "ArrowDown",
+        "ARROWLEFT": "ArrowLeft",
+        "LEFT": "ArrowLeft",
+        "ARROWRIGHT": "ArrowRight",
+        "RIGHT": "ArrowRight",
         "HOME": "Home",
         "END": "End",
         "PAGEUP": "PageUp",
+        "PAGE_UP": "PageUp",
         "PAGEDOWN": "PageDown",
-        "ARROWUP": "ArrowUp",
-        "ARROWDOWN": "ArrowDown",
-        "ARROWLEFT": "ArrowLeft",
-        "ARROWRIGHT": "ArrowRight",
-        "F1": "F1",
-        "F2": "F2",
-        "F3": "F3",
-        "F4": "F4",
-        "F5": "F5",
-        "F6": "F6",
-        "F7": "F7",
-        "F8": "F8",
-        "F9": "F9",
-        "F10": "F10",
-        "F11": "F11",
-        "F12": "F12",
+        "PAGE_DOWN": "PageDown",
+        
+        # Function keys
+        "F1": "F1", "F2": "F2", "F3": "F3", "F4": "F4",
+        "F5": "F5", "F6": "F6", "F7": "F7", "F8": "F8",
+        "F9": "F9", "F10": "F10", "F11": "F11", "F12": "F12",
+        
+        # Numeric keypad
+        "NUMPAD0": "0", "NUMPAD1": "1", "NUMPAD2": "2", "NUMPAD3": "3",
+        "NUMPAD4": "4", "NUMPAD5": "5", "NUMPAD6": "6", "NUMPAD7": "7",
+        "NUMPAD8": "8", "NUMPAD9": "9",
+        "NUMPADADD": "+",
+        "NUMPADDECIMAL": ".",
+        "NUMPADDIVIDE": "/",
+        "NUMPADMULTIPLY": "*",
+        "NUMPADSUBTRACT": "-",
     }
     
     for action in actions:
@@ -82,13 +104,23 @@ def handle_computer_actions(page, actions):
                         page.keyboard.press(mapped_key)
                     except Exception as e:
                         print(f"[Warning] Failed to press key '{mapped_key}' (original: '{key}'): {e}")
-                        # Continue instead of crashing
                         continue
             case "type":
                 text = action.get("text") if isinstance(action, dict) else action.text
                 page.keyboard.type(text)
             case "wait":
                 time.sleep(2)
+            case "navigate":
+                url = action.get("url") if isinstance(action, dict) else getattr(action, "url", None)
+                if url:
+                    print(f"[Navigation] Navigating to {url}")
+                    try:
+                        page.goto(url, wait_until="domcontentloaded", timeout=10000)
+                        print(f"[Navigation] Successfully navigated to {url}")
+                    except Exception as e:
+                        print(f"[Navigation] Failed to navigate to {url}: {e}")
+                else:
+                    print("[Navigation] No URL provided in navigate action")
             case "screenshot":
                 pass
             case _:
@@ -161,11 +193,18 @@ def run_browser_task(start_url, task_description, debug=False):
         task_description: Task description for the model to follow
         debug: Enable debug mode with screenshot saving
     """
+    # Add action instructions to the task
+    enhanced_task = f"""{task_description}
+
+IMPORTANT: You have access to a 'navigate' action to switch between sites directly. 
+When you need to go to a different domain/website, use the navigate action with the URL instead of trying to click the address bar.
+This will be much faster and more reliable for cross-site navigation."""
+    
     # Create initial request to the model
     response = client.responses.create(
         model="gpt-5.4",
         tools=[{"type": "computer"}],
-        input=task_description,
+        input=enhanced_task,
     )
     
     # Initialize Playwright browser
@@ -225,6 +264,20 @@ def run_browser_task(start_url, task_description, debug=False):
 # task = "Navigate to https://williamlugoloobi.com and find the current blog posts listed. Use the computer tool to explore the website and click on links as needed."
 # start_url = "https://ntfy.sh/llms_know_difficulty"
 # task = "Navigate to https://ntfy.sh/llms_know_difficulty and play a game with the person there. Try to win. you must return the hangam string with one filled letter per turn. the person will tell you whether it is correct or not"
-start_url = "https://www.nytimes.com/"
-task = "Navigate to https://www.nytimes.com/ and tell us the latest news. After that go to https://polymarket.com/ and search up corresponding bets running parallel to the news. Report on the most promising ones. cross check between the two sites to find out a prospective event."
+
+# start_url = "https://www.nytimes.com/"
+# task = "Navigate to https://www.nytimes.com/ and tell us the latest news. After that go to https://polymarket.com/ and search up corresponding bets running parallel to the news. Report on the most promising ones. cross check between the two sites to find out a prospective event."
+
+start_url = "https://www.wikipedia.com/"
+task = """You are browsing Wikipedia to answer a question.
+Rules:
+
+You may only use pages on wikipedia.org.
+Use the browser to gather evidence before answering.
+When finished, output the final answer within the answer tags e.g <answer>here</answer>.
+
+Question: Which magazine was started first Arthur's Magazine or First for Women?"""
+
+
+
 run_browser_task(start_url, task, debug=True)
