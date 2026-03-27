@@ -39,4 +39,14 @@ test_site/.vercel
 # typescript
 test_site/*.tsbuildinfo
 test_site/next-env.d.ts
+
+# local env files
 .env
+
+# local development
+apptainer_cache
+apptainer_tmp
+artifacts
+build-temp*
+playwright-sandbox
+__pycache__

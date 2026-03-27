@@ -209,8 +209,25 @@ This will be much faster and more reliable for cross-site navigation."""
     
     # Initialize Playwright browser
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        browser = p.chromium.launch(
+            headless=False,
+            args=[
+                "--disable-dev-shm-usage",
+                "--no-first-run",
+                "--no-default-browser-check",
+            ],
+        )
+        context = browser.new_context(
+            viewport={"width": 1440, "height": 900},
+            screen={"width": 1440, "height": 900},
+            locale="en-GB",
+            timezone_id="Europe/London",
+            device_scale_factor=1,
+            color_scheme="light",
+        )
+        page = context.new_page()
+
+        # page = browser.new_page(viewport={"width": 1440, "height": 900})
         
         # Navigate to starting page
         print(f"Navigating to {start_url}...")
