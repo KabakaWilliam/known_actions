@@ -12,11 +12,13 @@ This project investigates whether LLM agents leave identifiable behavioral signa
 
 ## Hypotheses
 
-1. **Identity from actions** — Behavioral traces are sufficient to classify model size, family, and specific endpoint.
+1. **Identity from actions** — Behavioral traces are sufficient to classify model size, family, reasoning level, and specific endpoint.
 2. **Cross-modal identity** — Identity signals generalize across task types and domains.
-3. **Modality differences** — Text-only and multimodal agents exhibit measurably different behavioral patterns.
+3. **Modality differences** — Text(DOM)-only and multimodal agents exhibit measurably different behavioral patterns.
 4. **Performance correlation** — Classifier confidence correlates with task performance metrics.
 5. **Early classification** — Agent identity can be inferred from short trace prefixes; we explore the tradeoff between trace length and classification accuracy.
+6. **Domain-invariant fingerprints** - do models have global browsing styles?(Train on Wikipedia → test on StackOverflow)
+7. **Task-invariant fingerprints** - Is the fingerprint tied to reasoning objective? (Train on QA → test on verification)
 
 ## Approach
 
@@ -24,6 +26,25 @@ This project investigates whether LLM agents leave identifiable behavioral signa
 - Extract behavioral features (timing, spatial patterns, action sequences) from raw traces
 - Train classifiers on aggregated feature vectors and/or sequential representations of traces
 - Evaluate identity attribution accuracy across model families and sizes
+
+
+## Data Plans
+- Currently recasting QA questions that rely on wikipedia to track browsing behavior. We may be visiting other sites in the process of trying to answer the question.
+- Can we check if detection models trained on this data on one site like wikipedia translate to other sites?
+- Potential sites: StackOverflow (verification)
+- Train on Wikipedia → test on StackOverflow
+
+
+## DATASETS
+- [2WikiMultihopQA](https://huggingface.co/datasets/framolfese/2WikiMultihopQA)
+- [FRAMES](https://huggingface.co/datasets/google/frames-benchmark)
+- [HotPotQA](https://huggingface.co/datasets/hotpotqa/hotpot_qa)
+
+## Supported Models
+- GPT 5.4 (vision, text)
+- Qwen3-VL (vision, text)
+- GPT-OSS-20B (text)
+- A model selection strategy might be based off of using (ScreenSpot Pro benchmark)[https://gui-agent.github.io/grounding-leaderboard/]
 
 ## Repo Structure
 

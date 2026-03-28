@@ -1,3 +1,5 @@
+import numpy as np
+
 def extract_comprehensive_features(trace_events):
     features = {}
     

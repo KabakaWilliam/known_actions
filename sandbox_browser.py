@@ -28,6 +28,7 @@ def run_browser_worker(
     extra_env: Optional[Mapping[str, str]] = None,
     capture_output: bool = True,
     check: bool = True,
+    target_artifacts_dir: Optional[Path] = None,
 ) -> dict[str, Any]:
     workdir = os.path.abspath(workdir or os.getcwd())
     sandbox_dir = os.path.abspath(sandbox_dir)
@@ -40,9 +41,24 @@ def run_browser_worker(
     if not os.path.isfile(worker_path):
         raise SandboxBrowserError(f"Worker script not found: {worker_path}")
 
-    # Create session timestamp directory for artifacts
-    session_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-    artifacts_dir = Path(workdir) / "artifacts" / session_timestamp
+    # Determine artifacts directory
+    if target_artifacts_dir is not None:
+        # Use provided directory for this eval run
+        target_artifacts_dir = Path(target_artifacts_dir)
+        if not target_artifacts_dir.is_absolute():
+            # Relative path - combine with workdir
+            artifacts_dir = Path(workdir) / target_artifacts_dir
+            artifacts_relative = target_artifacts_dir
+        else:
+            # Absolute path - compute relative
+            artifacts_dir = target_artifacts_dir
+            artifacts_relative = artifacts_dir.relative_to(Path(workdir))
+    else:
+        # Create session timestamp directory for artifacts (default behavior)
+        session_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        artifacts_dir = Path(workdir) / "artifacts" / session_timestamp
+        artifacts_relative = Path("artifacts") / session_timestamp
+    
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     payload_path = artifacts_dir / "browser_payload.json"
     payload_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -51,7 +67,7 @@ def run_browser_worker(
     extra_env = dict(extra_env or {})
     host_env.update(extra_env)
 
-    inner_cmd = ["python", f"/work/{Path(worker_script).name}", "--payload", f"/work/artifacts/{session_timestamp}/browser_payload.json"]
+    inner_cmd = ["python", f"/work/{Path(worker_script).name}", "--payload", f"/work/{artifacts_relative}/browser_payload.json"]
     if headed:
         inner_cmd = ["xvfb-run", "-a", *inner_cmd]
 
