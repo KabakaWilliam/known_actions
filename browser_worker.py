@@ -5,16 +5,41 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from openai import OpenAI
 from playwright.sync_api import sync_playwright
 
+from trace_injector import TraceCollector
+
 load_dotenv()
 
 
+def _extract_origin(url: str) -> Optional[str]:
+    """Safely extract origin (netloc) from URL.
+    
+    Args:
+        url: URL string
+        
+    Returns:
+        Origin string (e.g., 'www.wikipedia.org') or None if parse fails
+    """
+    try:
+        parsed = urlparse(url)
+        return parsed.netloc or None
+    except Exception:
+        return None
+
+
 def handle_computer_actions(page, actions):
+    """Execute computer actions on the page.
+    
+    Args:
+        page: Playwright page object
+        actions: List of action dicts/objects to execute
+    """
     key_map = {
         "CTRL": "Control",
         "CONTROL": "Control",
@@ -49,7 +74,7 @@ def handle_computer_actions(page, actions):
         "PAGE_DOWN": "PageDown",
     }
 
-    for action in actions:
+    for idx, action in enumerate(actions):
         action_type = action.get("type") if isinstance(action, dict) else action.type
         match action_type:
             case "click":
@@ -87,7 +112,7 @@ def handle_computer_actions(page, actions):
                 if url:
                     page.goto(url, wait_until="domcontentloaded", timeout=10000)
             case "screenshot":
-                pass
+                pass  # No-op - we handle screenshots separately
             case _:
                 raise ValueError(f"Unsupported action: {action_type}")
 
@@ -115,36 +140,84 @@ def send_computer_screenshot(client, response_id, call_id, screenshot_base64):
     )
 
 
-def computer_use_loop(page, response, client, artifacts_dir: Path, debug: bool = False):
-    iteration = 0
-    max_iterations = 30
+def computer_use_loop(page, response, client, artifacts_dir: Path, trace_collector: TraceCollector, debug: bool = False):
+    """Execute computer use loop with model responses.
+    
+    Args:
+        page: Playwright page
+        response: Initial model response
+        client: OpenAI client
+        artifacts_dir: Directory for artifacts
+        trace_collector: Trace collector
+        debug: Whether to save debug screenshots
+    """
+    action_sequence = 0
+    max_sequences = 30
+    prev_url = page.url
+    prev_origin = _extract_origin(prev_url)
 
-    while iteration < max_iterations:
-        iteration += 1
+    while action_sequence < max_sequences:
+        action_sequence += 1
         computer_call = next((item for item in response.output if item.type == "computer_call"), None)
         if computer_call is None:
             return response
 
+        # Check for navigate actions to track origin changes
+        has_navigate = any(
+            (a.get("type") if isinstance(a, dict) else a.type) == "navigate" 
+            for a in computer_call.actions
+        )
+
+        # Execute actions (events captured by JavaScript)
         handle_computer_actions(page, computer_call.actions)
+        
+        # If navigation occurred, log it with page load timing
+        if has_navigate:
+            current_url = page.url
+            current_origin = _extract_origin(current_url)
+            if current_origin and prev_origin and current_origin != prev_origin:
+                # Cross-origin navigation detected
+                # Collect any events before navigation resets context
+                trace_collector.add_page_events_to_trace(page)
+                trace_collector.clear_page_trace(page)
+                
+                # Now log the navigation event
+                page_load_time = trace_collector.measure_page_load(page)
+                trace_collector.add_navigation_event(
+                    page, 
+                    current_url, 
+                    reason="navigate",
+                    prev_origin=prev_origin,
+                    page_load_time=page_load_time
+                )
+                prev_origin = current_origin
+            prev_url = current_url
+        
+        # Wait longer for post-action events to fire (especially after navigation)
+        time.sleep(1.0)
+        
+        # Collect trace after actions (including any navigate actions)
+        trace_collector.add_page_events_to_trace(page)
+        trace_collector.clear_page_trace(page)
+        
         time.sleep(1)
         screenshot = capture_screenshot(page)
-        screenshot_base64 = base64.b64encode(screenshot).decode("utf-8")
 
         if debug:
-            shot_path = artifacts_dir / f"screenshot_iteration_{iteration}.png"
+            shot_path = artifacts_dir / f"screenshot_action_sequence_{action_sequence}.png"
             shot_path.write_bytes(screenshot)
 
         response = send_computer_screenshot(
             client=client,
             response_id=response.id,
             call_id=computer_call.call_id,
-            screenshot_base64=screenshot_base64,
+            screenshot_base64=base64.b64encode(screenshot).decode("utf-8"),
         )
 
     return response
 
 
-def run_browser_task(payload: dict[str, Any], artifacts_dir: Path = None) -> dict[str, Any]:
+def run_browser_task(payload: dict[str, Any], artifacts_dir: Optional[Path] = None) -> dict[str, Any]:
     openai_api_key = os.getenv("OPENAI_API_KEY", "")
     if not openai_api_key:
         raise RuntimeError("OPENAI_API_KEY is not set inside the sandbox")
@@ -157,6 +230,9 @@ def run_browser_task(payload: dict[str, Any], artifacts_dir: Path = None) -> dic
     if artifacts_dir is None:
         artifacts_dir = Path("artifacts")
     artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    # Initialize trace collector
+    trace_collector = TraceCollector(artifacts_dir)
 
     enhanced_task = f"""{task_description}
 
@@ -187,11 +263,25 @@ This will be much faster and more reliable for cross-site navigation."""
         )
         page = context.new_page()
 
+        # Inject trace collector into page (and setup navigation handler)
+        trace_collector.inject_trace_collector(page)
+
+        # Record initial navigation event with page load timing
         page.goto(start_url, wait_until="domcontentloaded", timeout=10000)
+        page_load_time = trace_collector.measure_page_load(page)
+        trace_collector.add_navigation_event(page, start_url, reason="initial", page_load_time=page_load_time)
+        
+        # Wait for initial events to fire (focus, etc)
+        time.sleep(0.5)
+        
+        # Collect initial page trace
+        trace_collector.add_page_events_to_trace(page)
+        trace_collector.clear_page_trace(page)
+        
         initial_screenshot = page.screenshot()
         (artifacts_dir / "initial_screenshot.png").write_bytes(initial_screenshot)
 
-        final_response = computer_use_loop(page, response, client, artifacts_dir=artifacts_dir, debug=debug)
+        final_response = computer_use_loop(page, response, client, artifacts_dir=artifacts_dir, trace_collector=trace_collector, debug=debug)
 
         response_text = ""
         if final_response.output:
@@ -219,6 +309,9 @@ This will be much faster and more reliable for cross-site navigation."""
                 "initial_screenshot": str(artifacts_dir / "initial_screenshot.png"),
             },
         }
+
+        # Save trace before closing
+        trace_collector.save_trace()
 
         browser.close()
         return result
