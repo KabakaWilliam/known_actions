@@ -45,6 +45,7 @@ test_site/next-env.d.ts
 
 # local development
 apptainer_cache
+docs
 apptainer_tmp
 artifacts
 build-temp*
