@@ -51,3 +51,7 @@ artifacts
 build-temp*
 playwright-sandbox
 __pycache__
+midscene-desktop*
+container_home
+logs
+vnc_pass
