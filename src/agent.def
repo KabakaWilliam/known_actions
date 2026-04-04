@@ -1,0 +1,38 @@
+Bootstrap: docker
+From: mcr.microsoft.com/playwright:v1.50.0-noble
+
+%post
+  # Install tsx globally for running TypeScript files directly
+  npm install -g tsx
+
+  # Pre-install all node_modules into /app inside the image.
+  # Source files (.ts, .js) live on the HOST and are only visible via the
+  # --bind mount at runtime. These are separate paths — do not confuse them.
+  mkdir -p /app
+  cat > /app/package.json << 'PKGJSON'
+  {
+    "name": "agent-trace-recorder",
+    "type": "module",
+    "devDependencies": {
+      "@midscene/web": "latest",
+      "playwright": "latest",
+      "@playwright/test": "latest",
+      "tsx": "latest",
+      "dotenv": "latest"
+    }
+  }
+PKGJSON
+  cd /app && npm install
+
+  # Pre-download Chromium browser binary into the image.
+  cd /app && npx playwright install chromium
+
+%environment
+  # NODE_PATH lets Node resolve modules from /app/node_modules even when
+  # the CWD is /workspace (the bind-mounted host directory).
+  export NODE_PATH=/app/node_modules
+  export PATH=/app/node_modules/.bin:/usr/local/bin:$PATH
+  export PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+%runscript
+  exec "$@"

@@ -1,0 +1,11 @@
+{
+  "name": "agent-trace-recorder",
+  "type": "module",
+  "devDependencies": {
+    "@midscene/web": "latest",
+    "playwright": "latest",
+    "@playwright/test": "latest",
+    "tsx": "latest",
+    "dotenv": "latest"
+  }
+}

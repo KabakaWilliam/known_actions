@@ -1,0 +1,90 @@
+# =============================================================================
+# config.yaml — REGISTRY (do not edit between experiments)
+#
+# Defines all available agents and dataset loaders.
+# Secrets use $VAR_NAME — resolved from .env at runtime.
+#
+# To run an experiment, edit custom_config.yaml (or create your own),
+# then: python orchestrator.py --config custom_config.yaml
+# =============================================================================
+
+# Global MidScene env vars applied to every agent unless overridden.
+# Valid MIDSCENE_MODEL_FAMILY values:
+#   gpt-5  gemini  qwen3-vl  qwen2.5-vl  qwen3.5  vlm-ui-tars
+#   (omit) → generic OpenAI-SDK-compatible mode (use for Claude etc.)
+midscene_defaults:
+  MIDSCENE_REPLANNING_CYCLE_LIMIT: "20"
+
+# =============================================================================
+# Agent registry
+# Referenced by agent_id in experiment configs.
+# env values here are defaults; experiments can override per-agent.
+# =============================================================================
+agents:
+
+  # --- Local vLLM models (start server before running) ---
+
+  - agent_id: qwen3vl
+    env:
+      MIDSCENE_MODEL_NAME:              "Qwen/Qwen3-VL-8B-Instruct"
+      MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"
+      MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3030/v1"
+      MIDSCENE_MODEL_FAMILY:            "qwen3-vl"
+      MIDSCENE_REPLANNING_CYCLE_LIMIT:  "30"
+
+  - agent_id: qwen25vl
+    env:
+      MIDSCENE_MODEL_NAME:              "Qwen/Qwen2.5-VL-7B-Instruct"
+      MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"
+      MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3031/v1"
+      MIDSCENE_MODEL_FAMILY:            "qwen2.5-vl"
+      MIDSCENE_REPLANNING_CYCLE_LIMIT:  "30"
+
+  - agent_id: qwen35
+    env:
+      MIDSCENE_MODEL_NAME:              "Qwen/Qwen3.5-VL-7B-Instruct"
+      MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"
+      MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3032/v1"
+      MIDSCENE_MODEL_FAMILY:            "qwen3.5"
+      MIDSCENE_REPLANNING_CYCLE_LIMIT:  "30"
+
+  - agent_id: uitars
+    env:
+      MIDSCENE_MODEL_NAME:              "ByteDance/UI-TARS-7B-SFT"
+      MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"
+      MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3033/v1"
+      MIDSCENE_MODEL_FAMILY:            "vlm-ui-tars"
+      MIDSCENE_REPLANNING_CYCLE_LIMIT:  "30"
+
+  # --- Cloud models ---
+
+  - agent_id: gpt54
+    env:
+      MIDSCENE_MODEL_NAME:     "gpt-5.4"
+      MIDSCENE_MODEL_API_KEY:  "$OPENAI_API_KEY"
+      MIDSCENE_MODEL_BASE_URL: "https://api.openai.com/v1"
+      MIDSCENE_MODEL_FAMILY:   "gpt-5"
+
+  - agent_id: claude_sonnet
+    env:
+      MIDSCENE_MODEL_NAME:     "claude-sonnet-4-20250514"
+      MIDSCENE_MODEL_API_KEY:  "$ANTHROPIC_API_KEY"
+      MIDSCENE_MODEL_BASE_URL: "https://api.anthropic.com/v1"
+      # MIDSCENE_MODEL_FAMILY omitted — Claude uses generic OpenAI-SDK-compat mode
+
+  - agent_id: gemini_flash
+    env:
+      MIDSCENE_MODEL_NAME:     "gemini-2.5-flash"
+      MIDSCENE_MODEL_API_KEY:  "$GOOGLE_API_KEY"
+      MIDSCENE_MODEL_BASE_URL: "https://generativelanguage.googleapis.com/v1beta/openai"
+      MIDSCENE_MODEL_FAMILY:   "gemini"
+
+# =============================================================================
+# Dataset loader registry
+# Maps logical dataset names to their HuggingFace repos.
+# Experiments reference these by the key under dataset_loaders.
+# prep_datasets.py uses this to know where to download from.
+# =============================================================================
+dataset_loaders:
+  2wikimultihop:
+    hf_repo: "framolfese/2WikiMultihopQA"

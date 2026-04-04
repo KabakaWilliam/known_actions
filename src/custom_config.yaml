@@ -1,0 +1,72 @@
+# =============================================================================
+# custom_config.yaml — EXPERIMENT SPEC
+#
+# This file fully defines one experiment run.
+# Run it with:
+#   python orchestrator.py --config custom_config.yaml
+#
+# Prep any non-builtin datasets first (one-time per split):
+#   python prep_datasets.py --config custom_config.yaml
+# =============================================================================
+
+run:
+  episodes_per_combo: 3   # repetitions per (agent × question) pair
+  timeout_s: 300          # per-episode timeout in seconds
+
+# =============================================================================
+# Agents
+# List agent_ids defined in config.yaml. Each is looked up in the registry
+# and its env vars are applied. Add an optional `env:` block here to override
+# specific MidScene settings for this experiment only.
+# =============================================================================
+agents:
+  # - agent_id: qwen3vl
+    # env:                          # uncomment to override for this experiment
+    #   MIDSCENE_REPLANNING_CYCLE_LIMIT: "40"
+
+  - agent_id: gpt54
+    env:                          
+        MIDSCENE_REPLANNING_CYCLE_LIMIT: "30"
+  # - agent_id: claude_sonnet
+  # - agent_id: gemini_flash
+
+# =============================================================================
+# Datasets
+# Each entry defines one dataset slice used in this experiment.
+# Traces land in: traces/{agent_id}/{name}/{timestamp}/
+#
+# source: builtin      → qa_dataset.QA_QUESTIONS, no prep needed
+# source: <file.json>  → prepped JSON file; run prep_datasets.py first
+#
+# For HuggingFace datasets, also specify:
+#   hf_dataset   → key in config.yaml dataset_loaders (used by prep_datasets.py)
+#   split        → train / validation / test
+#   n_questions  → sample size (omit or null = use all)
+#   seed         → random seed for reproducible sampling
+# =============================================================================
+datasets:
+  # - name: custom
+  #   source: builtin
+
+  - name: 2wikimultihop_val
+    source: datasets/2wikimultihop_val.json
+    hf_dataset: 2wikimultihop
+    split: validation
+    n_questions: 50
+    seed: 42
+
+  # --- Additional splits (uncomment + run prep_datasets.py to activate) ---
+
+  # - name: 2wikimultihop_train
+  #   source: datasets/2wikimultihop_train.json
+  #   hf_dataset: 2wikimultihop
+  #   split: train
+  #   n_questions: 200
+  #   seed: 42
+
+  # - name: 2wikimultihop_test
+  #   source: datasets/2wikimultihop_test.json
+  #   hf_dataset: 2wikimultihop
+  #   split: test
+  #   n_questions: 50
+  #   seed: 42
