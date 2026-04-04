@@ -1,4 +1,5 @@
-import argparse, datetime, itertools, json, os, random, re, subprocess, sys, uuid
+import argparse, datetime, itertools, json, os, random, re, subprocess, sys, threading, uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from dotenv import load_dotenv
 from qa_dataset import QA_QUESTIONS
@@ -115,24 +116,18 @@ def build_apptainer_cmd(agent, question, episode_id, output_dir: str) -> list[st
     return cmd
 
 
-def run_episode(agent, question, episode_id, output_dir, timeout_s, dry_run=False) -> bool:
+def run_episode(agent, question, episode_id, output_dir, timeout_s, dry_run=False) -> tuple[bool, list[str]]:
     cmd = build_apptainer_cmd(agent, question, episode_id, output_dir)
     if dry_run:
-        print(" ".join(cmd))
-        return True
-    print(f"[→] {agent['agent_id']} | {episode_id} | {question[:55]}")
+        return True, [" ".join(cmd)]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
         if result.returncode != 0:
-            print(result.stderr[-800:])
-            return False
-        for line in result.stdout.splitlines():
-            if line.startswith("["):
-                print(line)
-        return True
+            return False, [f"[✗] {episode_id}", result.stderr[-800:]]
+        lines = [l for l in result.stdout.splitlines() if l.startswith("[")]
+        return True, lines
     except subprocess.TimeoutExpired:
-        print(f"[ERROR] {episode_id} timed out after {timeout_s}s")
-        return False
+        return False, [f"[TIMEOUT] {episode_id} after {timeout_s}s"]
 
 
 def main():
@@ -150,6 +145,8 @@ def main():
                         help=f"Experiment config file (default: {DEFAULT_CFG.name})")
     parser.add_argument("--episodes-per-combo", type=int, default=None,
                         help="Override run.episodes_per_combo from the experiment config")
+    parser.add_argument("--workers", type=int, default=None,
+                        help="Override run.workers from the experiment config (parallel episodes)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print apptainer commands without executing")
     args = parser.parse_args()
@@ -167,6 +164,7 @@ def main():
     datasets = resolve_datasets(exp)
     episodes_per_combo = args.episodes_per_combo or run_cfg.get("episodes_per_combo", 3)
     timeout_s          = run_cfg.get("timeout_s", 300)
+    workers            = args.workers or run_cfg.get("workers", 1)
 
     if not agents:
         print("No valid agents in experiment config. Check agent_ids match registry.")
@@ -185,31 +183,60 @@ def main():
     total_q       = sum(len(d["questions"]) for d in datasets)
     total_episodes = len(agents) * total_q * episodes_per_combo
     ds_summary    = ", ".join(f"{d['name']}({len(d['questions'])}q)" for d in datasets)
+    workers_label = f"{workers} (parallel)" if workers > 1 else "1 (serial)"
     print(f"Config:   {args.config.name}")
     print(f"Agents:   {[a['agent_id'] for a in agents]}")
     print(f"Datasets: [{ds_summary}]")
     print(f"Episodes: {total_episodes}  ({len(agents)} agents × {total_q} questions × {episodes_per_combo} reps)")
+    print(f"Workers:  {workers_label}")
     print()
 
-    succeeded = failed = 0
-    combos = list(itertools.product(agents, datasets))
-    bar = tqdm(total=total_episodes, unit="ep", dynamic_ncols=True)
-
-    for agent, dataset in combos:
+    # Pre-build flat job list
+    jobs = []
+    for agent, dataset in itertools.product(agents, datasets):
         container_out = f"/app/workspace/traces/{agent['agent_id']}/{dataset['name']}/{run_ts}"
         for q in dataset["questions"]:
             for _ in range(episodes_per_combo):
                 ep_id = f"{agent['agent_id']}_{uuid.uuid4().hex[:8]}"
-                bar.set_description(f"{agent['agent_id']} | {dataset['name']} | {q['question'][:40]}")
-                ok = run_episode(agent, q["question"], ep_id, container_out, timeout_s, args.dry_run)
-                if ok:
-                    succeeded += 1
-                else:
-                    failed += 1
-                bar.set_postfix(ok=succeeded, fail=failed)
-                bar.update(1)
+                label = f"{agent['agent_id']} | {dataset['name']} | {q['question'][:45]}"
+                jobs.append((agent, q["question"], ep_id, container_out, label))
 
-    bar.close()
+    succeeded = failed = 0
+    lock = threading.Lock()
+
+    if args.dry_run or workers == 1:
+        bar = tqdm(jobs, total=len(jobs), unit="ep", dynamic_ncols=True)
+        for agent, question, ep_id, out, label in bar:
+            bar.set_description(label[:55])
+            ok, lines = run_episode(agent, question, ep_id, out, timeout_s, args.dry_run)
+            if ok:
+                succeeded += 1
+            else:
+                failed += 1
+            bar.set_postfix(ok=succeeded, fail=failed)
+            for line in lines:
+                tqdm.write(line)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            future_to_label = {
+                pool.submit(run_episode, agent, q, ep_id, out, timeout_s): label
+                for agent, q, ep_id, out, label in jobs
+            }
+            bar = tqdm(as_completed(future_to_label), total=len(jobs), unit="ep", dynamic_ncols=True)
+            for future in bar:
+                label = future_to_label[future]
+                ok, lines = future.result()
+                with lock:
+                    if ok:
+                        succeeded += 1
+                    else:
+                        failed += 1
+                    bar.set_postfix(ok=succeeded, fail=failed)
+                status = "✓" if ok else "✗"
+                tqdm.write(f"[{status}] {label}")
+                for line in lines:
+                    tqdm.write(f"    {line}")
+
     print(f"\nDone: {succeeded} succeeded, {failed} failed")
 
 
