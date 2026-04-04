@@ -1,28 +1,23 @@
 (function () {
   if (window.__agentTrace) return;  // double-injection guard
 
-  // Capture the origin of the page this tracer was initialized on.
-  // Only record events while we remain on this same origin.
-  const TRACED_ORIGIN = location.origin;
-  const onTracedOrigin = () => location.origin === TRACED_ORIGIN;
-
   window.__agentTrace = {
-    episodeId:     null,         // filled by agent_runner.ts after injection
-    agentId:       null,
-    events:        [],
-    startTime:     Date.now(),   // page-relative epoch (ms since page init)
-    startTimeWall: Date.now(),   // wall-clock value — used by agent_runner.ts
-                                 // to anchor events to the episode timeline
+    episodeId: null,           // filled by agent_runner.ts after injection
+    agentId:   null,
+    events:    [],
+    startTime: Date.now(),     // page-relative epoch (ms since page init)
   };
 
   const record = (type, data) => {
-    if (!onTracedOrigin()) return;
-    window.__agentTrace.events.push({
+    if (!location.href.startsWith('http')) return;  // skip about:blank, data: URIs, etc.
+    const event = {
       type,
-      t: Date.now() - window.__agentTrace.startTime,
+      t:   Date.now() - window.__agentTrace.startTime,
       url: location.href,
       ...data,
-    });
+    };
+    window.__agentTrace.events.push(event);
+    window.__pushTraceEvent?.(event);  // push directly to Node.js; backstop array kept for beforeunload edge case
   };
 
   // -------------------------------------------------------------------------
@@ -78,10 +73,24 @@
     record('navigate', { trigger: 'popstate', to: location.href });
   });
 
+  // Focus — fires when an input or textarea gains focus (e.g. the search box).
+  // A website's own analytics can observe focus events; reveals interaction intent
+  // without capturing typed content (that comes from keydown below).
+  document.addEventListener('focus', (e) => {
+    const tag = e.target?.tagName;
+    if (tag !== 'INPUT' && tag !== 'TEXTAREA') return;
+    record('focus', {
+      target_tag:  tag,
+      target_id:   e.target?.id,
+      target_name: e.target?.name ?? null,
+    });
+  }, true);
+
   // Beforeunload — fires synchronously before a full HTTP navigation away.
   // Mirrors the sendBeacon pattern used by real-world analytics to capture
-  // the last-recorded href and scroll depth before the page tears down.
-  // agent_runner.ts polls at 100ms so this has a reasonable chance of capture.
+  // the last-recorded scroll depth before the page tears down.
+  // The __pushTraceEvent CDP call may or may not complete before page teardown;
+  // agent_runner.ts runs a backstop harvest() at episode end for the final page.
   window.addEventListener('beforeunload', () => {
     record('beforeunload', {
       scrollY:   window.scrollY,
@@ -93,5 +102,5 @@
     });
   });
 
-  console.log('[AgentTracer] Injected on', TRACED_ORIGIN);
+  console.log('[AgentTracer] Injected on', location.origin);
 })();

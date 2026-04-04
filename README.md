@@ -17,15 +17,18 @@ Records Wikipedia browsing traces from LLM agents and trains classifiers to pred
 │                                                                 │
 │  agent_runner.ts                                                │
 │  ├── launches headless Chromium via Playwright                  │
+│  ├── exposeFunction(__pushTraceEvent) — events pushed from page │
+│  │     to Node.js over CDP in real-time (no polling)           │
 │  ├── registers framenavigated listener (HTTP navigation capture)│
 │  ├── injects page_tracer.js into every page load                │
-│  │     records: clicks · scrolls · keypresses · navigations    │
-│  │               beforeunload (scroll depth at page exit)       │
+│  │     records: clicks · scrolls · keypresses · focus          │
+│  │               navigations · beforeunload (scroll at exit)   │
 │  │     (no search terms, no content — behavior only)           │
 │  ├── navigates to en.wikipedia.org                              │
 │  ├── calls MidScene aiAct() with the question                   │
 │  │     the LLM browses freely, following links across pages     │
-│  ├── polls __agentTrace every 100ms; adds t_episode (monotonic) │
+│  │     on failure: partial trace saved with error field set     │
+│  ├── single backstop harvest() for beforeunload edge cases      │
 │  └── writes  traces/{agent_id}/{dataset}/{timestamp}/{id}.json  │
 └─────────────────────────────────────────────────────────────────┘
                     │
@@ -48,7 +51,8 @@ Each episode produces one `.json` trace file:
 | Field | Contents |
 |---|---|
 | `meta` | model name, agent id, dataset name, question, timestamp |
-| `result` | the agent's answer, confidence, Wikipedia sources cited |
+| `result` | the agent's answer, confidence, Wikipedia sources cited — `null` if `aiAct` failed |
+| `error` | error message string if `aiAct` threw, otherwise `null` |
 | `midscene_log` | high-level MidScene action log — what the LLM decided to do |
 | `dom_trace` | low-level DOM events — clicks, scrolls, keypresses, navigations |
 
@@ -64,19 +68,20 @@ The classifiers see only `dom_trace` events — they never see the question text
 | `navigate` `trigger:"pushState"` | `history.pushState` patch | `url`, `to`, `t_episode` |
 | `navigate` `trigger:"popstate"` | `window popstate` listener | `url`, `to`, `t_episode` |
 | `click` | `document click` (capture phase) | `x`, `y`, `target_tag`, `target_text` (≤100 chars), `target_id`, `target_class`, `href` |
+| `focus` | `document focus` (capture phase), inputs only | `target_tag`, `target_id`, `target_name` |
 | `keydown` | `document keydown` (capture phase) | `key` — structural keys verbatim (`Enter`, `ArrowDown`, …); printable chars → `"char"` |
 | `scroll` | `document scroll`, debounced 200ms | `scrollY`, `docHeight`, `pct` (0–100) |
 | `beforeunload` | `window beforeunload` | `scrollY`, `docHeight`, `pct`, `leaving_href` |
 
 ### Timeline anchoring
 
-Each Wikipedia page reload reinitializes the in-page timer. `page_tracer.js` records `startTimeWall` (absolute wall-clock at page init). `agent_runner.ts` reads this on each navigation to compute a per-page offset, then adds `t_episode = pageEpochOffset + e.t` to every event — giving a single monotonic timeline across all pages in a session.
+Each Wikipedia page reload reinitialises the in-page timer (`t` restarts at 0). `agent_runner.ts` stamps `t_episode = Date.now() - episodeStart` on every event when it arrives via the `__pushTraceEvent` CDP bridge — giving a single monotonic timeline across all pages in a session without any per-page offset arithmetic.
 
 HTTP navigation events are captured directly by Playwright's `framenavigated` listener (not by the in-page script), so they are never lost to page reloads.
 
 ## Behavioral features
 
-`trace_analyzer.py` extracts 27 features per episode for the Random Forest / Gradient Boosting classifiers. The LSTM operates on the raw token sequence (6 token types).
+`trace_analyzer.py` extracts 29 features per episode for the Random Forest / Gradient Boosting classifiers. The LSTM operates on the raw token sequence (7 token types, including `focus`).
 
 ### Volume
 
@@ -87,6 +92,7 @@ HTTP navigation events are captured directly by Playwright's `framenavigated` li
 | `n_navigations` | Total navigate events (HTTP + pushState + popstate) |
 | `n_keydowns` | Total keydown events |
 | `n_beforeunload` | Page exit events fired (equals page_count − 1 when capture is complete) |
+| `n_focus` | Input/textarea focus events (search box interactions) |
 | `n_events_total` | All DOM events combined |
 | `n_midscene_actions` | High-level MidScene planning steps (from `midscene_log`) |
 | `page_count` | Unique pages visited (counted from HTTP navigate events) |
@@ -131,6 +137,7 @@ All timing uses `t_episode` — monotonic milliseconds from episode start.
 | `nav_to_click_ratio` | `n_navigations / n_clicks` |
 | `keydowns_per_page` | `n_keydowns / page_count` (search-box typing frequency) |
 | `midscene_per_page` | `n_midscene_actions / page_count` |
+| `focus_per_page` | `n_focus / page_count` (how often the agent re-focuses the search box per page) |
 
 ## Configuration
 
@@ -159,9 +166,10 @@ That's it. The experiment config is the single source of truth for everything in
 run:
   episodes_per_combo: 3   # reps per (agent × question) pair
   timeout_s: 300          # per-episode timeout
+  workers: 5              # parallel episodes; 1 = serial
 
 agents:
-  - agent_id: qwen3vl     # resolved from config.yaml registry
+  - agent_id: qwen3vl_8b  # resolved from config.yaml registry
   - agent_id: gpt54
     env:                  # optional per-experiment overrides
       MIDSCENE_REPLANNING_CYCLE_LIMIT: "15"
@@ -207,7 +215,7 @@ datasets:
 
 ```
 traces/
-├── qwen3vl/
+├── qwen3vl_8b/
 │   ├── custom/
 │   │   └── 20260404_090000/
 │   │       ├── qwen3vl_a1b2c3d4.json
@@ -307,10 +315,10 @@ curl http://127.0.0.1:3030/v1/models | python3 -m json.tool
 
 | agent_id | Model | Port | MidScene family |
 |---|---|---|---|
-| `qwen3vl` | Qwen3-VL-8B-Instruct | 3030 | `qwen3-vl` |
-| `qwen25vl` | Qwen2.5-VL-7B-Instruct | 3031 | `qwen2.5-vl` |
-| `qwen35` | Qwen3.5-VL-7B-Instruct | 3032 | `qwen3.5` |
-| `uitars` | UI-TARS-7B-SFT | 3033 | `vlm-ui-tars` |
+| `qwen3vl_8b` | Qwen3-VL-8B-Instruct | 3030 | `qwen3-vl` |
+| `qwen25vl_7b` | Qwen2.5-VL-7B-Instruct | 3031 | `qwen2.5-vl` |
+| `qwen35_7b` | Qwen3.5-VL-7B-Instruct | 3032 | `qwen3.5` |
+| `uitars_7b` | UI-TARS-7B-SFT | 3033 | `vlm-ui-tars` |
 
 ## Tuning MidScene behavior
 

@@ -41,103 +41,74 @@ const browser = await chromium.launch({
 
 try {
   const context = await browser.newContext();
+
+  // Episode wall-clock start — all t_episode values are ms since this moment.
+  const episodeStart = Date.now();
+  const allDomEvents: object[] = [];
+  let harvestCursor = 0;
+
+  // -------------------------------------------------------------------------
+  // Event-driven collection via exposeFunction.
+  //
+  // page_tracer.js calls window.__pushTraceEvent(event) for every recorded
+  // interaction. Playwright routes the call over CDP to this handler — no
+  // polling needed. harvestCursor stays in sync so the backstop harvest()
+  // below only reads events that didn't make it through this bridge.
+  // -------------------------------------------------------------------------
+  await context.exposeFunction('__pushTraceEvent', (event: any) => {
+    allDomEvents.push({ ...event, t_episode: Date.now() - episodeStart });
+    harvestCursor++;
+  });
+
   await context.addInitScript(injectorScript);
 
   const page = await context.newPage();
   await page.setViewportSize({ width: 1280, height: 768 });
 
-  // Episode wall-clock start — all t_episode values are ms since this moment.
-  // This is the single timeline anchor across all pages in the session.
-  const episodeStart = Date.now();
-
-  // --- Inject episode metadata ---
-  await page.goto('about:blank');
-  await page.evaluate(({ episodeId, agentId }) => {
-    if ((window as any).__agentTrace) {
-      (window as any).__agentTrace.episodeId = episodeId;
-      (window as any).__agentTrace.agentId   = agentId;
-    }
-  }, { episodeId: EPISODE_ID, agentId: AGENT_ID });
-
   // -------------------------------------------------------------------------
-  // Fix 1 — Capture HTTP navigations from the Playwright side.
+  // Capture HTTP navigations from the Playwright side.
   //
   // MidScene navigates via standard href clicks → full page reloads.
   // These are invisible to page_tracer.js (which only patches pushState/popstate)
   // but Playwright's framenavigated fires on every HTTP navigation.
   //
-  // What a website owner sees: every page request hits their server logs with
-  // URL, referrer, and timestamp — exactly what we record here.
+  // Also reset harvestCursor: each new page gets a fresh __agentTrace.events[],
+  // so the index must restart from 0.
   // -------------------------------------------------------------------------
   page.on('framenavigated', (frame: Parameters<Parameters<typeof page.on<'framenavigated'>>[1]>[0]) => {
     if (frame !== page.mainFrame()) return;
     const url = frame.url();
     if (url === 'about:blank') return;
+    harvestCursor = 0;
     allDomEvents.push({
-      type:       'navigate',
-      t_episode:  Date.now() - episodeStart,
+      type:      'navigate',
+      t_episode: Date.now() - episodeStart,
       url,
-      trigger:    'http',   // distinguishes full HTTP nav from pushState/popstate
+      trigger:   'http',
     });
   });
 
   // -------------------------------------------------------------------------
-  // Fix 2 — Harvest at 100ms instead of 500ms.
+  // Backstop harvest: reads any events that didn't arrive via exposeFunction.
   //
-  // Navigation-triggering clicks fire and the page loads in ~200–400ms.
-  // At 500ms polling the click event was almost always lost in the gap.
-  // At 100ms the window is narrow enough to capture it reliably.
+  // The main case is the beforeunload event: the CDP bridge call is in-flight
+  // when the page tears down and may not complete. A single harvest() call
+  // at episode end recovers those events from the in-page array.
   // -------------------------------------------------------------------------
-  const allDomEvents: object[] = [];
-  let harvestCursor = 0;
-  let harvestUrl    = '';
-  let pageEpochOffset = 0;  // (pageStartTimeWall - episodeStart) for current page
-
   const harvest = async () => {
     try {
-      const currentUrl = page.url();
-      if (currentUrl !== harvestUrl) {
-        // Page navigated — reset cursor and recompute the epoch offset so
-        // this page's events are anchored to the episode timeline (Fix 3).
-        harvestCursor = 0;
-        harvestUrl    = currentUrl;
-        pageEpochOffset = await page.evaluate(() => {
-          const trace = (window as any).__agentTrace;
-          // startTimeWall is the browser wall-clock value at page init.
-          // Subtract episodeStart (passed below) to get episode-relative offset.
-          return trace?.startTimeWall ?? Date.now();
-        }).then((startTimeWall: number) => startTimeWall - episodeStart).catch(() => 0);
-      }
-
       const fresh = await page.evaluate((cursor: number) => {
         const trace = (window as any).__agentTrace;
         if (!trace) return [];
         return trace.events.slice(cursor);
       }, harvestCursor);
-
-      // -----------------------------------------------------------------------
-      // Fix 3 — Add t_episode: a monotonic, episode-relative timestamp.
-      //
-      // page_tracer.js sets t relative to each page's own startTime, so events
-      // on page 2 start at t=0 again. t_episode = pageEpochOffset + t gives a
-      // single coherent timeline across all pages in the session.
-      //
-      // This mirrors what a website owner sees: their server logs timestamps are
-      // absolute, and time-on-page is derived from consecutive request times.
-      // -----------------------------------------------------------------------
-      const anchored = (fresh as any[]).map(e => ({
-        ...e,
-        t_episode: pageEpochOffset + e.t,
-      }));
-
-      allDomEvents.push(...anchored);
-      harvestCursor += fresh.length;
+      const now = Date.now();
+      allDomEvents.push(...(fresh as any[]).map(e => ({ ...e, t_episode: now - episodeStart })));
+      harvestCursor += (fresh as any[]).length;
     } catch {
-      // Page may be mid-navigation; skip this tick silently.
+      // Page may be mid-navigation; skip silently.
     }
   };
-
-  const harvestInterval = setInterval(harvest, 100);
 
   // --- Run the task ---
   await page.goto('https://en.wikipedia.org', { waitUntil: 'networkidle' });
@@ -157,8 +128,7 @@ try {
     aiActError = String(err);
   }
 
-  clearInterval(harvestInterval);
-  await harvest();  // final drain regardless of success/failure
+  await harvest();  // backstop: catch any events that missed the push bridge
 
   // --- Extract the answer (skip if aiAct failed) ---
   let result: { answer: string; confidence: 'high' | 'medium' | 'low'; sources: string[] } | null = null;

@@ -1,9 +1,11 @@
 import json, pickle, warnings
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.metrics import classification_report
+from sklearn.model_selection import GridSearchCV
 from sklearn.preprocessing import LabelEncoder
 import torch
 import torch.nn as nn
@@ -20,8 +22,16 @@ EVENT_VOCAB = {
     "scroll":       4,
     "navigate":     5,
     "beforeunload": 6,
+    "focus":        7,   # input/textarea focus — search box interactions
 }
 VOCAB_SIZE = len(EVENT_VOCAB)
+
+
+def _infer_split(dataset_name: str) -> str | None:
+    if dataset_name.endswith("_train"): return "train"
+    if dataset_name.endswith("_val"):   return "val"
+    if dataset_name.endswith("_test"):  return "test"
+    return None
 
 
 def extract_features(episode) -> dict:
@@ -34,6 +44,7 @@ def extract_features(episode) -> dict:
     navs         = [e for e in events if e["type"] == "navigate"]
     keydowns     = [e for e in events if e["type"] == "keydown"]
     beforeunload = [e for e in events if e["type"] == "beforeunload"]
+    focuses      = [e for e in events if e["type"] == "focus"]
 
     page_count = dom.get("pageCount") or len({e.get("url", "") for e in events})
 
@@ -66,12 +77,13 @@ def extract_features(episode) -> dict:
     n_link_clicks    = sum(1 for e in clicks if e.get("href"))
     link_click_ratio = n_link_clicks / max(len(clicks), 1)
 
-    # Navigation
+    # Navigation / volume
     n_clicks           = len(clicks)
     n_scrolls          = len(scrolls)
     n_navigations      = len(navs)
     n_keydowns         = len(keydowns)
     n_beforeunload     = len(beforeunload)
+    n_focus            = len(focuses)
     n_events_total     = len(events)
     n_midscene_actions = len(mlog)
 
@@ -79,6 +91,7 @@ def extract_features(episode) -> dict:
     nav_to_click_ratio  = n_navigations / max(n_clicks, 1)
     keydowns_per_page   = n_keydowns / max(page_count, 1)
     midscene_per_page   = n_midscene_actions / max(page_count, 1)
+    focus_per_page      = n_focus / max(page_count, 1)
 
     # Scroll depth at beforeunload — how deep was the agent when it left each page
     bu_pcts = [e.get("pct", 0) for e in beforeunload]
@@ -91,6 +104,7 @@ def extract_features(episode) -> dict:
         "n_navigations":        n_navigations,
         "n_keydowns":           n_keydowns,
         "n_beforeunload":       n_beforeunload,
+        "n_focus":              n_focus,
         "n_events_total":       n_events_total,
         "n_midscene_actions":   n_midscene_actions,
         "page_count":           page_count,
@@ -116,6 +130,7 @@ def extract_features(episode) -> dict:
         "nav_to_click_ratio":     nav_to_click_ratio,
         "keydowns_per_page":      keydowns_per_page,
         "midscene_per_page":      midscene_per_page,
+        "focus_per_page":         focus_per_page,
         "mean_exit_scroll_pct":   mean_exit_scroll_pct,
     }
 
@@ -125,21 +140,41 @@ def extract_sequence(episode) -> list:
     return [EVENT_VOCAB.get(e["type"], EVENT_VOCAB["<unk>"]) for e in events]
 
 
-def load_dataset(trace_dir) -> tuple:
-    features  = []
-    sequences = []
-    labels    = []
-    # traces/{agent_id}/{timestamp}/episode.json — recurse two levels deep
+def load_dataset(trace_dir: Path) -> dict[str, tuple]:
+    """Load all episode traces, bucketed by split inferred from the path.
+
+    Path pattern: traces/{agent_id}/{dataset_name}/{timestamp}/{episode_id}.json
+    Split is determined by the suffix of dataset_name:
+      _train → "train",  _val → "val",  _test → "test"
+
+    Returns {"train": (features, sequences, labels), "val": ..., "test": ...}
+    with empty lists for any split that has no data.
+    """
+    buckets: dict[str, tuple[list, list, list]] = {
+        "train": ([], [], []),
+        "val":   ([], [], []),
+        "test":  ([], [], []),
+    }
     for path in sorted(trace_dir.rglob("*.json")):
+        rel_parts = path.relative_to(trace_dir).parts
+        if rel_parts[0] == "models":
+            continue  # skip results.json / classifier artefacts
+        if len(rel_parts) < 2:
+            warnings.warn(f"Skipping {path}: unexpected path depth")
+            continue
+        split = _infer_split(rel_parts[1])
+        if split is None:
+            warnings.warn(f"Skipping {path}: unrecognised dataset '{rel_parts[1]}'")
+            continue
         try:
             with open(path) as f:
                 episode = json.load(f)
-            features.append(extract_features(episode))
-            sequences.append(extract_sequence(episode))
-            labels.append(episode["meta"]["agent_id"])
+            buckets[split][0].append(extract_features(episode))
+            buckets[split][1].append(extract_sequence(episode))
+            buckets[split][2].append(episode["meta"]["agent_id"])
         except Exception as e:
             warnings.warn(f"Skipping {path.name}: {e}")
-    return features, sequences, labels
+    return {s: tuple(lists) for s, lists in buckets.items()}
 
 
 class SequenceDataset(Dataset):
@@ -186,133 +221,253 @@ class AgentLSTM(nn.Module):
         return self.head(out)
 
 
-def train_lstm(sequences, labels_encoded, n_classes, n_epochs=30):
-    EMBED_DIM  = 16
-    HIDDEN_DIM = 64
-    N_LAYERS   = 2
-    BATCH_SIZE = 16
-    LR         = 1e-3
+_LSTM_EMBED_DIM  = 16
+_LSTM_N_LAYERS   = 2
+_LSTM_BATCH_SIZE = 16
+_LSTM_LR         = 1e-3
+_LSTM_GRID = [
+    {"hidden_dim": 64,  "dropout": 0.2},
+    {"hidden_dim": 64,  "dropout": 0.4},
+    {"hidden_dim": 128, "dropout": 0.2},
+    {"hidden_dim": 128, "dropout": 0.4},
+]
 
+
+def _fit_lstm(seq_train, y_train, n_classes, hyperparams, n_epochs=30):
+    """Train one AgentLSTM config on seq_train/y_train. Returns the trained model."""
     device = torch.device("cpu")
+    hidden_dim = hyperparams["hidden_dim"]
+    dropout    = hyperparams["dropout"]
 
-    seq_tensors = [torch.tensor(s, dtype=torch.long) for s in sequences]
-    lbl_tensor  = torch.tensor(labels_encoded, dtype=torch.long)
+    seq_tensors = [torch.tensor(s, dtype=torch.long) for s in seq_train]
+    lbl_tensor  = torch.tensor(y_train, dtype=torch.long)
+    dl = DataLoader(SequenceDataset(seq_tensors, lbl_tensor),
+                    batch_size=_LSTM_BATCH_SIZE, shuffle=True, collate_fn=collate_fn)
 
-    skf       = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    fold_accs = []
-
-    for fold, (train_idx, val_idx) in enumerate(skf.split(seq_tensors, labels_encoded)):
-        train_seqs = [seq_tensors[i] for i in train_idx]
-        val_seqs   = [seq_tensors[i] for i in val_idx]
-        train_lbls = lbl_tensor[train_idx]
-        val_lbls   = lbl_tensor[val_idx]
-
-        train_ds = SequenceDataset(train_seqs, train_lbls)
-        val_ds   = SequenceDataset(val_seqs,   val_lbls)
-        train_dl = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,
-                              collate_fn=collate_fn)
-        val_dl   = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False,
-                              collate_fn=collate_fn)
-
-        model     = AgentLSTM(VOCAB_SIZE, EMBED_DIM, HIDDEN_DIM, N_LAYERS,
-                              n_classes).to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-        criterion = nn.CrossEntropyLoss()
-
-        model.train()
-        for epoch in range(n_epochs):
-            for padded, lengths, lbls in train_dl:
-                padded, lengths, lbls = padded.to(device), lengths.to(device), lbls.to(device)
-                optimizer.zero_grad()
-                logits = model(padded, lengths)
-                loss   = criterion(logits, lbls)
-                loss.backward()
-                optimizer.step()
-
-        # Evaluate on validation fold
-        model.eval()
-        correct = 0
-        total   = 0
-        with torch.no_grad():
-            for padded, lengths, lbls in val_dl:
-                padded, lengths, lbls = padded.to(device), lengths.to(device), lbls.to(device)
-                logits = model(padded, lengths)
-                preds  = logits.argmax(dim=1)
-                correct += (preds == lbls).sum().item()
-                total   += lbls.size(0)
-        fold_accs.append(correct / total if total > 0 else 0.0)
-
-    mean_acc = float(np.mean(fold_accs))
-    std_acc  = float(np.std(fold_accs))
-
-    # Train final model on all data
-    full_ds = SequenceDataset(seq_tensors, lbl_tensor)
-    full_dl = DataLoader(full_ds, batch_size=BATCH_SIZE, shuffle=True,
-                         collate_fn=collate_fn)
-    model = AgentLSTM(VOCAB_SIZE, EMBED_DIM, HIDDEN_DIM, N_LAYERS,
-                      n_classes).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+    model     = AgentLSTM(VOCAB_SIZE, _LSTM_EMBED_DIM, hidden_dim, _LSTM_N_LAYERS,
+                          n_classes, dropout=dropout).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=_LSTM_LR)
     criterion = nn.CrossEntropyLoss()
 
     model.train()
-    for epoch in range(n_epochs):
-        for padded, lengths, lbls in full_dl:
+    for _ in range(n_epochs):
+        for padded, lengths, lbls in dl:
             padded, lengths, lbls = padded.to(device), lengths.to(device), lbls.to(device)
             optimizer.zero_grad()
-            logits = model(padded, lengths)
-            loss   = criterion(logits, lbls)
-            loss.backward()
+            criterion(model(padded, lengths), lbls).backward()
             optimizer.step()
-
-    torch.save(model.state_dict(), TRACE_DIR / "models" / "lstm_model.pt")
-
-    return mean_acc, std_acc
+    return model
 
 
-def train(trace_dir):
-    features, sequences, labels = load_dataset(trace_dir)
+def _eval_lstm(model, seq_eval, y_eval):
+    """Evaluate a trained AgentLSTM. Returns (accuracy, predictions_list)."""
+    device = torch.device("cpu")
+    seq_tensors = [torch.tensor(s, dtype=torch.long) for s in seq_eval]
+    lbl_tensor  = torch.tensor(y_eval, dtype=torch.long)
+    dl = DataLoader(SequenceDataset(seq_tensors, lbl_tensor),
+                    batch_size=_LSTM_BATCH_SIZE, shuffle=False, collate_fn=collate_fn)
 
-    if len(features) < 10:
-        print(
-            f"Only {len(features)} episodes loaded — results will not be "
-            "meaningful. Run more episodes first."
-        )
-        # Continue anyway so the code path is tested.
+    model.eval()
+    all_preds, all_trues = [], []
+    with torch.no_grad():
+        for padded, lengths, lbls in dl:
+            padded, lengths, lbls = padded.to(device), lengths.to(device), lbls.to(device)
+            preds = model(padded, lengths).argmax(dim=1)
+            all_preds.extend(preds.cpu().tolist())
+            all_trues.extend(lbls.cpu().tolist())
 
+    acc = sum(p == t for p, t in zip(all_preds, all_trues)) / len(all_trues)
+    return float(acc), all_preds
+
+
+def train_lstm(seq_train, y_train, seq_val, y_val, seq_test, y_test,
+               n_classes, n_epochs=30) -> dict:
+    """Grid search over hidden_dim × dropout, pick best by val accuracy.
+
+    Fits final model on train only. Returns best_params, val_report, test_report.
+    test_report is None when seq_test is empty.
+    """
+    best_val_acc = -1.0
+    best_params  = _LSTM_GRID[0]
+
+    print("  LSTM grid search:")
+    for params in _LSTM_GRID:
+        model = _fit_lstm(seq_train, y_train, n_classes, params, n_epochs=n_epochs)
+        val_acc, _ = _eval_lstm(model, seq_val, y_val)
+        print(f"    hidden_dim={params['hidden_dim']}  dropout={params['dropout']}  "
+              f"val_acc={val_acc:.3f}")
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            best_params  = params
+
+    print(f"  Best: {best_params}  val_acc={best_val_acc:.3f}")
+
+    final_model      = _fit_lstm(seq_train, y_train, n_classes, best_params, n_epochs=n_epochs)
+    _, val_preds     = _eval_lstm(final_model, seq_val, y_val)
+    val_report       = classification_report(y_val, val_preds, output_dict=True)
+    test_report      = None
+    if seq_test:
+        _, test_preds = _eval_lstm(final_model, seq_test, y_test)
+        test_report   = classification_report(y_test, test_preds, output_dict=True)
+
+    torch.save(final_model.state_dict(), TRACE_DIR / "models" / "lstm_model.pt")
+    return {"best_params": best_params, "val_report": val_report, "test_report": test_report}
+
+
+RF_PARAM_GRID = {
+    "n_estimators":      [100, 200, 300],
+    "max_depth":         [None, 10, 20],
+    "min_samples_split": [2, 5],
+}
+GB_PARAM_GRID = {
+    "n_estimators":  [100, 200],
+    "learning_rate": [0.05, 0.1, 0.2],
+    "max_depth":     [3, 5],
+}
+
+
+def train(trace_dir: Path) -> None:
+    splits = load_dataset(trace_dir)
+    feat_train, seq_train, lbl_train = splits["train"]
+    feat_val,   seq_val,   lbl_val   = splits["val"]
+    feat_test,  seq_test,  lbl_test  = splits["test"]
+
+    # --- guards ---
+    if not feat_train:
+        print("ERROR: No training episodes found. Run more episodes first.")
+        return
+    if len(feat_train) < 10:
+        print(f"WARNING: Only {len(feat_train)} training episodes — results will not be meaningful.")
+    has_val  = bool(feat_val)
+    has_test = bool(feat_test)
+    if not has_val:
+        warnings.warn("No val episodes found — skipping hyperparameter tuning, using defaults.")
+    if not has_test:
+        warnings.warn("No test episodes found — test_report will be null.")
+
+    # --- label encoder fitted on all labels across splits ---
     le = LabelEncoder()
-    y  = le.fit_transform(labels)
+    le.fit(lbl_train + lbl_val + lbl_test)
+    y_train = le.transform(lbl_train)
+    y_val   = le.transform(lbl_val)  if lbl_val  else np.array([], dtype=int)
+    y_test  = le.transform(lbl_test) if lbl_test else np.array([], dtype=int)
 
-    # --- Random Forest ---
-    feat_names = list(features[0].keys())
-    X = np.array([[ep[k] for k in feat_names] for ep in features])
+    # --- feature matrices ---
+    feat_names = list(feat_train[0].keys())
+    def to_X(feats):
+        return np.array([[ep[k] for k in feat_names] for ep in feats]) if feats \
+               else np.empty((0, len(feat_names)))
+    X_train = to_X(feat_train)
+    X_val   = to_X(feat_val)
+    X_test  = to_X(feat_test)
 
-    rf  = RandomForestClassifier(n_estimators=200, random_state=42)
-    gb  = GradientBoostingClassifier(n_estimators=100, random_state=42)
-    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    # --- RF / GradientBoosting ---
+    clf_results = {}
+    best_rf     = None
 
-    for name, clf in [("RandomForest", rf), ("GradientBoosting", gb)]:
-        scores = cross_val_score(clf, X, y, cv=skf, scoring="accuracy")
-        print(f"{name:20s}  CV accuracy: {scores.mean():.3f} ± {scores.std():.3f}")
+    for name, Clf, param_grid, defaults in [
+        ("RandomForest",
+         RandomForestClassifier,
+         RF_PARAM_GRID,
+         {"n_estimators": 200, "random_state": 42}),
+        ("GradientBoosting",
+         GradientBoostingClassifier,
+         GB_PARAM_GRID,
+         {"n_estimators": 100, "random_state": 42}),
+    ]:
+        if has_val:
+            gs = GridSearchCV(Clf(random_state=42), param_grid,
+                              cv=3, scoring="accuracy", n_jobs=-1, refit=True)
+            gs.fit(X_train, y_train)
+            best_clf    = gs.best_estimator_
+            best_params = gs.best_params_
+            val_preds   = best_clf.predict(X_val)
+            val_report  = classification_report(
+                y_val, val_preds, target_names=le.classes_, output_dict=True)
+            print(f"{name:20s}  best={best_params}  "
+                  f"val_acc={val_report['accuracy']:.3f}")
+        else:
+            best_clf = Clf(**defaults).fit(X_train, y_train)
+            best_params, val_report = defaults, None
 
-    rf.fit(X, y)
-    importances = sorted(zip(feat_names, rf.feature_importances_),
-                         key=lambda x: -x[1])
+        test_report = None
+        if has_test:
+            test_preds  = best_clf.predict(X_test)
+            test_report = classification_report(
+                y_test, test_preds, target_names=le.classes_, output_dict=True)
+            print(f"{name:20s}  test_acc={test_report['accuracy']:.3f}")
+
+        clf_results[name] = {
+            "best_params": best_params,
+            "val_report":  val_report,
+            "test_report": test_report,
+        }
+        if name == "RandomForest":
+            best_rf = best_clf
+
+    importances = sorted(zip(feat_names, best_rf.feature_importances_), key=lambda x: -x[1])
     print("\nTop 10 features (Random Forest):")
     for fname, imp in importances[:10]:
         print(f"  {fname:<30} {imp:.4f}")
+    clf_results["RandomForest"]["feature_importances"] = {
+        fname: float(imp) for fname, imp in importances
+    }
 
     # --- LSTM ---
-    print("\nTraining LSTM (5-fold CV) ...")
-    n_classes = len(le.classes_)
-    lstm_mean, lstm_std = train_lstm(sequences, y, n_classes)
-    print(f"{'LSTM':20s}  CV accuracy: {lstm_mean:.3f} ± {lstm_std:.3f}")
+    def remap(report):
+        if report is None:
+            return None
+        out = {}
+        for k, v in report.items():
+            try:
+                out[le.classes_[int(k)]] = v
+            except (ValueError, IndexError):
+                out[k] = v
+        return out
 
-    # Save Random Forest + label encoder for later inference
+    print("\nTraining LSTM ...")
+    n_classes = len(le.classes_)
+    if has_val:
+        lstm_result = train_lstm(
+            seq_train, list(y_train),
+            seq_val,   list(y_val),
+            seq_test,  list(y_test),
+            n_classes,
+        )
+        lstm_result["val_report"]  = remap(lstm_result["val_report"])
+        lstm_result["test_report"] = remap(lstm_result["test_report"])
+        if lstm_result["val_report"]:
+            print(f"{'LSTM':20s}  val_acc={lstm_result['val_report']['accuracy']:.3f}")
+        if lstm_result["test_report"]:
+            print(f"{'LSTM':20s}  test_acc={lstm_result['test_report']['accuracy']:.3f}")
+    else:
+        default_params = {"hidden_dim": 64, "dropout": 0.3}
+        model          = _fit_lstm(seq_train, list(y_train), n_classes, default_params)
+        test_report    = None
+        if has_test:
+            _, test_preds = _eval_lstm(model, seq_test, list(y_test))
+            test_report   = remap(classification_report(list(y_test), test_preds, output_dict=True))
+        torch.save(model.state_dict(), TRACE_DIR / "models" / "lstm_model.pt")
+        lstm_result = {"best_params": default_params, "val_report": None, "test_report": test_report}
+
+    clf_results["LSTM"] = lstm_result
+
+    # --- save artefacts ---
     models_dir = trace_dir / "models"
     models_dir.mkdir(exist_ok=True)
     with open(models_dir / "classifier.pkl", "wb") as f:
-        pickle.dump({"rf": rf, "le": le, "feat_names": feat_names}, f)
-    print("\nSaved: traces/models/classifier.pkl  traces/models/lstm_model.pt")
+        pickle.dump({"rf": best_rf, "le": le, "feat_names": feat_names}, f)
+
+    results = {
+        "timestamp":   datetime.now(timezone.utc).isoformat(),
+        "n_episodes":  {"train": len(feat_train), "val": len(feat_val), "test": len(feat_test)},
+        "class_names": list(le.classes_),
+        "models":      clf_results,
+    }
+    results_path = models_dir / "results.json"
+    with open(results_path, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"\nSaved: {results_path}  traces/models/classifier.pkl  traces/models/lstm_model.pt")
 
 
 if __name__ == "__main__":

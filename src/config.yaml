@@ -13,7 +13,7 @@
 #   gpt-5  gemini  qwen3-vl  qwen2.5-vl  qwen3.5  vlm-ui-tars
 #   (omit) → generic OpenAI-SDK-compatible mode (use for Claude etc.)
 midscene_defaults:
-  MIDSCENE_REPLANNING_CYCLE_LIMIT: "20"
+  MIDSCENE_REPLANNING_CYCLE_LIMIT: "40" #"20"
 
 # =============================================================================
 # Agent registry
@@ -24,13 +24,21 @@ agents:
 
   # --- Local vLLM models (start server before running) ---
 
+  - agent_id: qwen3vl_30b_a3b
+    env:
+      MIDSCENE_MODEL_NAME:              "Qwen/Qwen3-VL-30B-A3B-Instruct"
+      MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"
+      MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3030/v1"
+      MIDSCENE_MODEL_FAMILY:            "qwen3-vl"
+      MIDSCENE_REPLANNING_CYCLE_LIMIT:  "40"
+
   - agent_id: qwen3vl_8b
     env:
       MIDSCENE_MODEL_NAME:              "Qwen/Qwen3-VL-8B-Instruct"
       MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"
       MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3030/v1"
       MIDSCENE_MODEL_FAMILY:            "qwen3-vl"
-      MIDSCENE_REPLANNING_CYCLE_LIMIT:  "30"
+      MIDSCENE_REPLANNING_CYCLE_LIMIT:  "40"
 
   - agent_id: qwen25vl_7b
     env:
@@ -38,7 +46,7 @@ agents:
       MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"
       MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3031/v1"
       MIDSCENE_MODEL_FAMILY:            "qwen2.5-vl"
-      MIDSCENE_REPLANNING_CYCLE_LIMIT:  "30"
+      MIDSCENE_REPLANNING_CYCLE_LIMIT:  "40"
 
   - agent_id: qwen35_7b
     env:
@@ -46,15 +54,15 @@ agents:
       MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"
       MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3032/v1"
       MIDSCENE_MODEL_FAMILY:            "qwen3.5"
-      MIDSCENE_REPLANNING_CYCLE_LIMIT:  "30"
+      MIDSCENE_REPLANNING_CYCLE_LIMIT:  "40"
 
   - agent_id: uitars_7b
     env:
-      MIDSCENE_MODEL_NAME:              "ByteDance/UI-TARS-7B-SFT"
+      MIDSCENE_MODEL_NAME:              "ByteDance-Seed/UI-TARS-1.5-7B"
       MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"
-      MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3033/v1"
-      MIDSCENE_MODEL_FAMILY:            "vlm-ui-tars"
-      MIDSCENE_REPLANNING_CYCLE_LIMIT:  "30"
+      MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3030/v1"
+      MIDSCENE_MODEL_FAMILY:            "vlm-ui-tars-doubao-1.5"
+      MIDSCENE_REPLANNING_CYCLE_LIMIT:  "40"
 
   # --- Cloud models ---
 
