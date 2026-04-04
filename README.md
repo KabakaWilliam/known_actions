@@ -10,7 +10,7 @@ Records Wikipedia browsing traces from LLM agents and trains classifiers to pred
 │  loads registry (config.yaml) + experiment spec                 │
 │  → spawns one Apptainer subprocess per (agent × question × rep) │
 └───────────────────┬─────────────────────────────────────────────┘
-                    │ apptainer exec --bind project:/app/workspace
+                    │ apptainer exec --bind src:/app/workspace
                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  agent.sif  (Playwright base image + Node deps + Chromium)      │
@@ -323,7 +323,7 @@ Set in `config.yaml` (`midscene_defaults:`) or override per-agent in your experi
 ## File layout
 
 ```
-project/
+src/
 ├── config.yaml             Registry: agents, dataset loaders, MidScene defaults
 ├── custom_config.yaml      Experiment spec (edit this to define a run)
 ├── agent.def               Apptainer build spec
