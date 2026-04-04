@@ -24,7 +24,7 @@ agents:
 
   # --- Local vLLM models (start server before running) ---
 
-  - agent_id: qwen3vl
+  - agent_id: qwen3vl_8b
     env:
       MIDSCENE_MODEL_NAME:              "Qwen/Qwen3-VL-8B-Instruct"
       MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"
@@ -32,7 +32,7 @@ agents:
       MIDSCENE_MODEL_FAMILY:            "qwen3-vl"
       MIDSCENE_REPLANNING_CYCLE_LIMIT:  "30"
 
-  - agent_id: qwen25vl
+  - agent_id: qwen25vl_7b
     env:
       MIDSCENE_MODEL_NAME:              "Qwen/Qwen2.5-VL-7B-Instruct"
       MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"
@@ -40,7 +40,7 @@ agents:
       MIDSCENE_MODEL_FAMILY:            "qwen2.5-vl"
       MIDSCENE_REPLANNING_CYCLE_LIMIT:  "30"
 
-  - agent_id: qwen35
+  - agent_id: qwen35_7b
     env:
       MIDSCENE_MODEL_NAME:              "Qwen/Qwen3.5-VL-7B-Instruct"
       MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"
@@ -48,7 +48,7 @@ agents:
       MIDSCENE_MODEL_FAMILY:            "qwen3.5"
       MIDSCENE_REPLANNING_CYCLE_LIMIT:  "30"
 
-  - agent_id: uitars
+  - agent_id: uitars_7b
     env:
       MIDSCENE_MODEL_NAME:              "ByteDance/UI-TARS-7B-SFT"
       MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"

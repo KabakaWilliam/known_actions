@@ -2,6 +2,9 @@
 .claude
 playwright-sandbox
 
+
 src/datasets
 src/traces
 src/agent.sif
+src/__pycache__
+**__pycache__**

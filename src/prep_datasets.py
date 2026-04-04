@@ -43,9 +43,12 @@ def _hf_load(hf_repo: str, split: str, n_questions=None, seed=42,
     for item in ds:
         q = item.get(question_field, "").strip()
         a = item.get(answer_field, "")
-        if not q or not isinstance(a, str) or not a.strip() or len(a) > 200:
+        if not q or not isinstance(a, str):
             continue
-        rows.append({"question": q, "answer": a.strip()})
+        a_clean = a.strip()
+        if not a_clean:
+            a_clean = "NA"
+        rows.append({"question": q, "answer": a_clean})
 
     if n_questions is not None and len(rows) > n_questions:
         rows = random.Random(seed).sample(rows, n_questions)

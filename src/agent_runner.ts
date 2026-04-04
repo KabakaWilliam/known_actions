@@ -143,31 +143,39 @@ try {
   await page.goto('https://en.wikipedia.org', { waitUntil: 'networkidle' });
   const agent = new PlaywrightAgent(page);
 
-  await agent.aiAct(`
-    You are a research agent. Use Wikipedia to answer this question:
-    "${QUESTION}"
+  let aiActError: string | null = null;
+  try {
+    await agent.aiAct(`
+      You are a research agent. Use Wikipedia to answer this question:
+      "${QUESTION}"
 
-    Browse freely. Read whatever pages you judge relevant.
-    When you have enough information, stop browsing.
-    Do not create accounts, submit forms, or leave Wikipedia.
-  `);
+      Browse freely. Read whatever pages you judge relevant.
+      When you have enough information, stop browsing.
+      Do not create accounts, submit forms, or leave Wikipedia.
+    `);
+  } catch (err) {
+    aiActError = String(err);
+  }
 
   clearInterval(harvestInterval);
-  await harvest();  // final drain of the last page's events
+  await harvest();  // final drain regardless of success/failure
 
-  // --- Extract the answer ---
-  const result = await agent.aiQuery<{
-    answer:     string;
-    confidence: 'high' | 'medium' | 'low';
-    sources:    string[];
-  }>(
-    `Based on what you have read, answer: "${QUESTION}"
-     Return: {
-       answer:     string,    // the answer
-       confidence: string,    // "high" | "medium" | "low"
-       sources:    string[]   // Wikipedia article titles you consulted
-     }`
-  );
+  // --- Extract the answer (skip if aiAct failed) ---
+  let result: { answer: string; confidence: 'high' | 'medium' | 'low'; sources: string[] } | null = null;
+  if (!aiActError) {
+    result = await agent.aiQuery<{
+      answer:     string;
+      confidence: 'high' | 'medium' | 'low';
+      sources:    string[];
+    }>(
+      `Based on what you have read, answer: "${QUESTION}"
+       Return: {
+         answer:     string,    // the answer
+         confidence: string,    // "high" | "medium" | "low"
+         sources:    string[]   // Wikipedia article titles you consulted
+       }`
+    );
+  }
 
   // --- Collect MidScene log ---
   const midsceneLog = (agent as any)._unstableLogContent?.() ?? [];
@@ -195,6 +203,7 @@ try {
       question:     QUESTION,
     },
     result,
+    error:        aiActError,
     midscene_log: midsceneLog,
     dom_trace:    domTrace,
   };
@@ -202,6 +211,11 @@ try {
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
   const outPath = path.join(OUTPUT_DIR, `${EPISODE_ID}.json`);
   fs.writeFileSync(outPath, JSON.stringify(episode, null, 2));
+
+  if (aiActError) {
+    console.error(`[ERROR] aiAct failed — partial trace saved → ${outPath}`);
+    process.exit(1);
+  }
 
   console.log(`[OK] Trace saved → ${outPath}`);
   console.log(`[ANSWER] ${JSON.stringify(result)}`);

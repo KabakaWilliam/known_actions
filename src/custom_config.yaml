@@ -12,7 +12,7 @@
 run:
   episodes_per_combo: 3   # repetitions per (agent × question) pair
   timeout_s: 300          # per-episode timeout in seconds
-  workers: 4              # parallel episodes; 1 = serial
+  workers: 5              # parallel episodes; 1 = serial
 
 # =============================================================================
 # Agents
@@ -21,13 +21,16 @@ run:
 # specific MidScene settings for this experiment only.
 # =============================================================================
 agents:
-  # - agent_id: qwen3vl
+  - agent_id: qwen3vl_8b
     # env:                          # uncomment to override for this experiment
     #   MIDSCENE_REPLANNING_CYCLE_LIMIT: "40"
 
-  - agent_id: gpt54
-    env:                          
-        MIDSCENE_REPLANNING_CYCLE_LIMIT: "30"
+  # - agent_id: gpt54
+  #   env:                          
+  #       MIDSCENE_REPLANNING_CYCLE_LIMIT: "30"
+  # - agent_id: qwen25vl_7b
+  # - agent_id: qwen35_7b
+  # - agent_id: uitars_7b
   # - agent_id: claude_sonnet
   # - agent_id: gemini_flash
 
@@ -53,21 +56,22 @@ datasets:
     source: datasets/2wikimultihop_val.json
     hf_dataset: 2wikimultihop
     split: validation
-    n_questions: 50
+    n_questions: 25
     seed: 42
 
   # --- Additional splits (uncomment + run prep_datasets.py to activate) ---
 
-  # - name: 2wikimultihop_train
-  #   source: datasets/2wikimultihop_train.json
-  #   hf_dataset: 2wikimultihop
-  #   split: train
-  #   n_questions: 200
-  #   seed: 42
+  - name: 2wikimultihop_train
+    source: datasets/2wikimultihop_train.json
+    hf_dataset: 2wikimultihop
+    split: train
+    n_questions: 50
+    # n_questions: 200
+    seed: 42
 
-  # - name: 2wikimultihop_test
-  #   source: datasets/2wikimultihop_test.json
-  #   hf_dataset: 2wikimultihop
-  #   split: test
-  #   n_questions: 50
-  #   seed: 42
+  - name: 2wikimultihop_test
+    source: datasets/2wikimultihop_test.json
+    hf_dataset: 2wikimultihop
+    split: test
+    n_questions: 25
+    seed: 42
