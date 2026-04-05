@@ -1,4 +1,4 @@
-import json, pickle, warnings
+import argparse, json, pickle, warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,6 +31,7 @@ def _infer_split(dataset_name: str) -> str | None:
     if dataset_name.endswith("_train"): return "train"
     if dataset_name.endswith("_val"):   return "val"
     if dataset_name.endswith("_test"):  return "test"
+    if dataset_name.endswith("_ood"):   return "ood"
     return None
 
 
@@ -60,17 +61,17 @@ def extract_features(episode) -> dict:
     p90_iei_ms       = float(np.percentile(ieis, 90))
 
     # Scroll
-    max_scroll_pct  = max((e.get("pct", 0) for e in scrolls), default=0) or 0
-    mean_scroll_pct = float(np.mean([e.get("pct", 0) for e in scrolls])) if scrolls else 0.0
-    n_deep_scrolls  = sum(1 for e in scrolls if e.get("pct", 0) > 60)
+    max_scroll_pct  = max((e.get("pct") or 0 for e in scrolls), default=0)
+    mean_scroll_pct = float(np.mean([e.get("pct") or 0 for e in scrolls])) if scrolls else 0.0
+    n_deep_scrolls  = sum(1 for e in scrolls if (e.get("pct") or 0) > 60)
 
-    pcts  = [e.get("pct", 0) for e in scrolls]
+    pcts  = [e.get("pct") or 0 for e in scrolls]
     diffs = np.diff(pcts)
     scroll_reversals = int(np.sum((diffs[:-1] * diffs[1:]) < 0)) if len(diffs) > 1 else 0
 
     # Clicks
-    click_xs = [e.get("x", 0) for e in clicks]
-    click_ys = [e.get("y", 0) for e in clicks]
+    click_xs = [e.get("x") or 0 for e in clicks]
+    click_ys = [e.get("y") or 0 for e in clicks]
     click_x_std = float(np.std(click_xs)) if click_xs else 0.0
     click_y_std = float(np.std(click_ys)) if click_ys else 0.0
 
@@ -94,7 +95,7 @@ def extract_features(episode) -> dict:
     focus_per_page      = n_focus / max(page_count, 1)
 
     # Scroll depth at beforeunload — how deep was the agent when it left each page
-    bu_pcts = [e.get("pct", 0) for e in beforeunload]
+    bu_pcts = [e.get("pct") or 0 for e in beforeunload]
     mean_exit_scroll_pct = float(np.mean(bu_pcts)) if bu_pcts else 0.0
 
     return {
@@ -155,9 +156,9 @@ def extract_sequence(episode) -> list[tuple[int, float, float, float, float]]:
         f0    = float(np.log1p(max(delta, 0)))
         f1    = float(np.log1p(max(t, 0)))
         if e["type"] == "scroll":
-            f2, f3 = e.get("pct", 0) / 100.0, 0.0
+            f2, f3 = (e.get("pct") or 0) / 100.0, 0.0
         elif e["type"] == "click":
-            f2, f3 = e.get("x", 0) / 1280.0, e.get("y", 0) / 768.0
+            f2, f3 = (e.get("x") or 0) / 1280.0, (e.get("y") or 0) / 768.0
         else:
             f2, f3 = 0.0, 0.0
         result.append((token, f0, f1, f2, f3))
@@ -165,21 +166,30 @@ def extract_sequence(episode) -> list[tuple[int, float, float, float, float]]:
     return result
 
 
-def load_dataset(trace_dir: Path) -> dict[str, tuple]:
+def load_dataset(trace_dir: Path,
+                 include_datasets: list[str] | None = None,
+                 ood_datasets: list[str] | None = None,
+                 ) -> tuple[dict[str, tuple], dict[str, set]]:
     """Load all episode traces, bucketed by split inferred from the path.
 
     Path pattern: traces/{agent_id}/{dataset_name}/{timestamp}/{episode_id}.json
     Split is determined by the suffix of dataset_name:
-      _train → "train",  _val → "val",  _test → "test"
+      _train → "train",  _val → "val",  _test → "test",  _ood → "ood"
 
-    Returns {"train": (features, sequences, labels), "val": ..., "test": ...}
-    with empty lists for any split that has no data.
+    include_datasets: if given, only load datasets whose base name
+      (suffix stripped) is in this list. e.g. ["2wikimultihop"] skips webshop_*.
+
+    Returns (splits, ds_names) where:
+      splits   = {"train": (features, sequences, labels), "val": ..., ...}
+      ds_names = {"train": {"2wikimultihop_train", ...}, "val": ..., ...}
     """
     buckets: dict[str, tuple[list, list, list]] = {
         "train": ([], [], []),
         "val":   ([], [], []),
         "test":  ([], [], []),
+        "ood":   ([], [], []),
     }
+    ds_names: dict[str, set] = {"train": set(), "val": set(), "test": set(), "ood": set()}
     for path in sorted(trace_dir.rglob("*.json")):
         rel_parts = path.relative_to(trace_dir).parts
         if rel_parts[0] == "models":
@@ -187,19 +197,29 @@ def load_dataset(trace_dir: Path) -> dict[str, tuple]:
         if len(rel_parts) < 2:
             warnings.warn(f"Skipping {path}: unexpected path depth")
             continue
-        split = _infer_split(rel_parts[1])
+        dataset_name = rel_parts[1]
+        split = _infer_split(dataset_name)
         if split is None:
-            warnings.warn(f"Skipping {path}: unrecognised dataset '{rel_parts[1]}'")
+            warnings.warn(f"Skipping {path}: unrecognised dataset '{dataset_name}'")
             continue
+        if ood_datasets is not None:
+            base = dataset_name.rsplit("_", 1)[0]
+            if base in ood_datasets:
+                split = "ood"
+        if include_datasets is not None:
+            base = dataset_name.rsplit("_", 1)[0]
+            if base not in include_datasets:
+                continue
         try:
             with open(path) as f:
                 episode = json.load(f)
             buckets[split][0].append(extract_features(episode))
             buckets[split][1].append(extract_sequence(episode))
             buckets[split][2].append(episode["meta"]["agent_id"])
+            ds_names[split].add(dataset_name)
         except Exception as e:
             warnings.warn(f"Skipping {path.name}: {e}")
-    return {s: tuple(lists) for s, lists in buckets.items()}
+    return {s: tuple(lists) for s, lists in buckets.items()}, ds_names
 
 
 class SequenceDataset(Dataset):
@@ -343,7 +363,8 @@ def _eval_lstm(model, seq_eval, X_eval, y_eval):
 def train_lstm(seq_train, X_train, y_train,
                seq_val,   X_val,   y_val,
                seq_test,  X_test,  y_test,
-               n_classes, n_epochs=_LSTM_N_EPOCHS) -> dict:
+               n_classes, models_dir: Path = TRACE_DIR / "models",
+               n_epochs=_LSTM_N_EPOCHS) -> dict:
     """Grid search over hidden_dim × dropout, pick best by val accuracy.
 
     Fits final model on train only. Returns best_params, val_report, test_report.
@@ -372,7 +393,7 @@ def train_lstm(seq_train, X_train, y_train,
         _, test_preds = _eval_lstm(final_model, seq_test, X_test, y_test)
         test_report   = classification_report(y_test, test_preds, output_dict=True)
 
-    torch.save(final_model.state_dict(), TRACE_DIR / "models" / "lstm_model.pt")
+    torch.save(final_model.state_dict(), models_dir / "lstm_model.pt")
     return {"best_params": best_params, "val_report": val_report, "test_report": test_report}
 
 
@@ -388,11 +409,15 @@ GB_PARAM_GRID = {
 }
 
 
-def train(trace_dir: Path) -> None:
-    splits = load_dataset(trace_dir)
+def train(trace_dir: Path, tag: str | None = None,
+          include_datasets: list[str] | None = None,
+          ood_datasets: list[str] | None = None) -> None:
+    splits, ds_names = load_dataset(trace_dir, include_datasets=include_datasets,
+                                    ood_datasets=ood_datasets)
     feat_train, seq_train, lbl_train = splits["train"]
     feat_val,   seq_val,   lbl_val   = splits["val"]
     feat_test,  seq_test,  lbl_test  = splits["test"]
+    feat_ood,   seq_ood,   lbl_ood   = splits["ood"]
 
     # --- guards ---
     if not feat_train:
@@ -402,6 +427,7 @@ def train(trace_dir: Path) -> None:
         print(f"WARNING: Only {len(feat_train)} training episodes — results will not be meaningful.")
     has_val  = bool(feat_val)
     has_test = bool(feat_test)
+    has_ood  = bool(feat_ood)
     if not has_val:
         warnings.warn("No val episodes found — skipping hyperparameter tuning, using defaults.")
     if not has_test:
@@ -409,10 +435,11 @@ def train(trace_dir: Path) -> None:
 
     # --- label encoder fitted on all labels across splits ---
     le = LabelEncoder()
-    le.fit(lbl_train + lbl_val + lbl_test)
+    le.fit(lbl_train + lbl_val + lbl_test + lbl_ood)
     y_train = le.transform(lbl_train)
     y_val   = le.transform(lbl_val)  if lbl_val  else np.array([], dtype=int)
     y_test  = le.transform(lbl_test) if lbl_test else np.array([], dtype=int)
+    y_ood   = le.transform(lbl_ood)  if lbl_ood  else np.array([], dtype=int)
 
     # --- feature matrices ---
     feat_names = list(feat_train[0].keys())
@@ -422,16 +449,26 @@ def train(trace_dir: Path) -> None:
     X_train = to_X(feat_train)
     X_val   = to_X(feat_val)
     X_test  = to_X(feat_test)
+    X_ood   = to_X(feat_ood)
 
     # Scaled copies for the LSTM head — RF/GB are scale-invariant so they use raw X
     scaler    = StandardScaler().fit(X_train)
     Xs_train  = scaler.transform(X_train)
     Xs_val    = scaler.transform(X_val)  if has_val  else X_val
     Xs_test   = scaler.transform(X_test) if has_test else X_test
+    Xs_ood    = scaler.transform(X_ood)  if has_ood  else X_ood
+
+    # --- derive models_dir from train-split dataset base names (or --tag override) ---
+    if tag is None:
+        base_names = sorted({n.rsplit("_", 1)[0] for n in ds_names["train"]})
+        tag = "_".join(base_names) if base_names else "unknown"
+    models_dir = trace_dir / "models" / tag
+    models_dir.mkdir(parents=True, exist_ok=True)
 
     # --- RF / GradientBoosting ---
     clf_results = {}
     best_rf     = None
+    best_gb     = None
 
     for name, Clf, param_grid, defaults in [
         ("RandomForest",
@@ -465,13 +502,21 @@ def train(trace_dir: Path) -> None:
                 y_test, test_preds, target_names=le.classes_, output_dict=True)
             print(f"{name:20s}  test_acc={test_report['accuracy']:.3f}")
 
+        ood_report = None
+        if has_ood:
+            ood_preds  = best_clf.predict(X_ood)
+            ood_report = classification_report(
+                y_ood, ood_preds, target_names=le.classes_, output_dict=True)
+            print(f"{name:20s}  ood_acc={ood_report['accuracy']:.3f}")  # type: ignore[index]
+
         clf_results[name] = {
             "best_params": best_params,
             "val_report":  val_report,
             "test_report": test_report,
+            "ood_report":  ood_report,
         }
-        if name == "RandomForest":
-            best_rf = best_clf
+        if name == "RandomForest":    best_rf = best_clf
+        if name == "GradientBoosting": best_gb = best_clf
 
     importances = sorted(zip(feat_names, best_rf.feature_importances_), key=lambda x: -x[1])
     print("\nTop 10 features (Random Forest):")
@@ -493,10 +538,6 @@ def train(trace_dir: Path) -> None:
                 out[k] = v
         return out
 
-    # mkdir before train_lstm, which saves lstm_model.pt into this directory
-    models_dir = trace_dir / "models"
-    models_dir.mkdir(exist_ok=True)
-
     print("\nTraining LSTM ...")
     n_classes = len(le.classes_)
     if has_val:
@@ -504,7 +545,7 @@ def train(trace_dir: Path) -> None:
             seq_train, Xs_train, list(y_train),
             seq_val,   Xs_val,   list(y_val),
             seq_test,  Xs_test,  list(y_test),
-            n_classes,
+            n_classes, models_dir=models_dir,
         )
         lstm_result["val_report"]  = remap(lstm_result["val_report"])
         lstm_result["test_report"] = remap(lstm_result["test_report"])
@@ -512,6 +553,15 @@ def train(trace_dir: Path) -> None:
             print(f"{'LSTM':20s}  val_acc={lstm_result['val_report']['accuracy']:.3f}")
         if lstm_result["test_report"]:
             print(f"{'LSTM':20s}  test_acc={lstm_result['test_report']['accuracy']:.3f}")
+        # OOD eval reuses the final trained model saved in train_lstm
+        lstm_result["ood_report"] = None
+        if has_ood:
+            final_model = _fit_lstm(seq_train, Xs_train, list(y_train), n_classes,
+                                    lstm_result["best_params"])
+            _, ood_preds      = _eval_lstm(final_model, seq_ood, Xs_ood, list(y_ood))
+            lstm_result["ood_report"] = remap(
+                classification_report(list(y_ood), ood_preds, output_dict=True))
+            print(f"{'LSTM':20s}  ood_acc={lstm_result['ood_report']['accuracy']:.3f}")  # type: ignore[index]
     else:
         default_params = {"hidden_dim": 64, "dropout": 0.3}
         model          = _fit_lstm(seq_train, Xs_train, list(y_train), n_classes, default_params)
@@ -519,25 +569,38 @@ def train(trace_dir: Path) -> None:
         if has_test:
             _, test_preds = _eval_lstm(model, seq_test, Xs_test, list(y_test))
             test_report   = remap(classification_report(list(y_test), test_preds, output_dict=True))
-        torch.save(model.state_dict(), TRACE_DIR / "models" / "lstm_model.pt")
-        lstm_result = {"best_params": default_params, "val_report": None, "test_report": test_report}
+        ood_report_lstm = None
+        if has_ood:
+            _, ood_preds    = _eval_lstm(model, seq_ood, Xs_ood, list(y_ood))
+            ood_report_lstm = remap(classification_report(list(y_ood), ood_preds, output_dict=True))
+            print(f"{'LSTM':20s}  ood_acc={ood_report_lstm['accuracy']:.3f}")  # type: ignore[index]
+        torch.save(model.state_dict(), models_dir / "lstm_model.pt")
+        lstm_result = {"best_params": default_params, "val_report": None,
+                       "test_report": test_report, "ood_report": ood_report_lstm}
 
     clf_results["LSTM"] = lstm_result
 
     # --- save artefacts ---
     with open(models_dir / "classifier.pkl", "wb") as f:
-        pickle.dump({"rf": best_rf, "le": le, "feat_names": feat_names}, f)
+        pickle.dump({"rf": best_rf, "gb": best_gb, "le": le,
+                     "feat_names": feat_names, "scaler": scaler}, f)
 
     results = {
-        "timestamp":   datetime.now(timezone.utc).isoformat(),
-        "n_episodes":  {"train": len(feat_train), "val": len(feat_val), "test": len(feat_test)},
-        "class_names": list(le.classes_),
-        "models":      clf_results,
+        "timestamp":      datetime.now(timezone.utc).isoformat(),
+        "tag":            tag,
+        "train_datasets": sorted(ds_names["train"]),
+        "val_datasets":   sorted(ds_names["val"]),
+        "test_datasets":  sorted(ds_names["test"]),
+        "ood_datasets":   sorted(ds_names["ood"]),
+        "n_episodes":     {"train": len(feat_train), "val": len(feat_val),
+                           "test": len(feat_test), "ood": len(feat_ood)},
+        "class_names":    list(le.classes_),
+        "models":         clf_results,
     }
     results_path = models_dir / "results.json"
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2)
-    print(f"\nSaved: {results_path}  traces/models/classifier.pkl  traces/models/lstm_model.pt")
+    print(f"\nSaved: {results_path}  {models_dir}/classifier.pkl  {models_dir}/lstm_model.pt")
 
     # --- print classification reports ---
     def _print_report(model_name, split_name, report):
@@ -562,11 +625,39 @@ def train(trace_dir: Path) -> None:
             print(f"\n  {'accuracy':>20}  {'':>9}  {'':>9}  {report['accuracy']:>9.3f}  {n:>7d}")
 
     for model_name, res in clf_results.items():
-        for split_name in ("val", "test"):
+        for split_name in ("val", "test", "ood"):
             report = res.get(f"{split_name}_report")
             if report:
                 _print_report(model_name, split_name, report)
 
 
 if __name__ == "__main__":
-    train(TRACE_DIR)
+    parser = argparse.ArgumentParser(
+        description="Train and evaluate agent classifiers from collected traces.",
+        epilog=(
+            "Examples:\n"
+            "  python trace_analyzer.py\n"
+            "  python trace_analyzer.py --datasets 2wikimultihop\n"
+            "  python trace_analyzer.py --datasets webshop\n"
+            "  python trace_analyzer.py --datasets webshop deepshop --ood-datasets deepshop\n" #train/val/test on webshop, ood on deepshop
+            "  python trace_analyzer.py --datasets 2wikimultihop webshop --ood-datasets webshop --tag wiki_ood_amazon\n"#train/val/test on 2wikimultihop, ood on webshop, save as wiki_ood_amazon
+            # need to have train/val/test on X, ood flag on Y, ood name for Yp
+
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--traces-dir", type=Path, default=Path("./traces"),
+                        help="Root traces directory (default: ./traces)")
+    parser.add_argument("--tag", type=str, default=None,
+                        help="Models subdirectory name. Default: auto-derived from train dataset names.")
+    parser.add_argument("--datasets", nargs="+", default=None,
+                        metavar="NAME",
+                        help="Base dataset names to include, e.g. 2wikimultihop webshop. "
+                             "Default: all datasets found in traces-dir.")
+    parser.add_argument("--ood-datasets", nargs="+", default=None,
+                        metavar="NAME",
+                        help="Base dataset names to force into OOD split regardless of suffix, "
+                             "e.g. --ood-datasets webshop")
+    cli = parser.parse_args()
+    train(cli.traces_dir, tag=cli.tag, include_datasets=cli.datasets,
+          ood_datasets=cli.ood_datasets)

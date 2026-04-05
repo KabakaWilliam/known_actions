@@ -91,12 +91,18 @@ def resolve_datasets(exp: dict) -> list[dict]:
         if n is not None and len(questions) > n:
             questions = random.Random(seed).sample(questions, n)
 
-        datasets.append({"name": name, "questions": questions})
+        datasets.append({
+            "name":                  name,
+            "questions":             questions,
+            "start_url":             dcfg.get("start_url", "https://en.wikipedia.org"),
+            "task_prompt_template":  dcfg.get("task_prompt_template"),  # None → agent_runner uses default
+            "task_type":             dcfg.get("task_type", "qa"),
+        })
 
     return datasets
 
 
-def build_apptainer_cmd(agent, question, episode_id, output_dir: str) -> list[str]:
+def build_apptainer_cmd(agent, question, episode_id, output_dir: str, dataset: dict) -> list[str]:
     cmd = [
         "apptainer", "exec",
         "--bind", f"{PROJECT_DIR}:/app/workspace",
@@ -112,12 +118,17 @@ def build_apptainer_cmd(agent, question, episode_id, output_dir: str) -> list[st
         "--agent_id",   agent["agent_id"],
         "--episode_id", episode_id,
         "--output_dir", output_dir,
+        "--start_url",  dataset["start_url"],
+        "--task_type",  dataset["task_type"],
     ]
+    template = dataset.get("task_prompt_template")
+    if template:
+        cmd += ["--task_prompt", template.replace("{question}", question)]
     return cmd
 
 
-def run_episode(agent, question, episode_id, output_dir, timeout_s, dry_run=False) -> tuple[bool, list[str]]:
-    cmd = build_apptainer_cmd(agent, question, episode_id, output_dir)
+def run_episode(agent, question, episode_id, output_dir, timeout_s, dataset, dry_run=False) -> tuple[bool, list[str]]:
+    cmd = build_apptainer_cmd(agent, question, episode_id, output_dir, dataset)
     if dry_run:
         return True, [" ".join(cmd)]
     try:
@@ -199,16 +210,16 @@ def main():
             for _ in range(episodes_per_combo):
                 ep_id = f"{agent['agent_id']}_{uuid.uuid4().hex[:8]}"
                 label = f"{agent['agent_id']} | {dataset['name']} | {q['question'][:45]}"
-                jobs.append((agent, q["question"], ep_id, container_out, label))
+                jobs.append((agent, q["question"], ep_id, container_out, dataset, label))
 
     succeeded = failed = 0
     lock = threading.Lock()
 
     if args.dry_run or workers == 1:
         bar = tqdm(jobs, total=len(jobs), unit="ep", dynamic_ncols=True)
-        for agent, question, ep_id, out, label in bar:
+        for agent, question, ep_id, out, dataset, label in bar:
             bar.set_description(label[:55])
-            ok, lines = run_episode(agent, question, ep_id, out, timeout_s, args.dry_run)
+            ok, lines = run_episode(agent, question, ep_id, out, timeout_s, dataset, args.dry_run)
             if ok:
                 succeeded += 1
             else:
@@ -219,8 +230,8 @@ def main():
     else:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             future_to_label = {
-                pool.submit(run_episode, agent, q, ep_id, out, timeout_s): label
-                for agent, q, ep_id, out, label in jobs
+                pool.submit(run_episode, agent, q, ep_id, out, timeout_s, ds): label
+                for agent, q, ep_id, out, ds, label in jobs
             }
             bar = tqdm(as_completed(future_to_label), total=len(jobs), unit="ep", dynamic_ncols=True)
             for future in bar:

@@ -42,12 +42,15 @@ def _hf_load(hf_repo: str, split: str, n_questions=None, seed=42,
     rows = []
     for item in ds:
         q = item.get(question_field, "").strip()
-        a = item.get(answer_field, "")
-        if not q or not isinstance(a, str):
+        if not q:
             continue
-        a_clean = a.strip()
-        if not a_clean:
-            a_clean = "NA"
+        if answer_field is not None:
+            a = item.get(answer_field, "")
+            if not isinstance(a, str):
+                continue
+            a_clean = a.strip() or "NA"
+        else:
+            a_clean = ""
         rows.append({"question": q, "answer": a_clean})
 
     if n_questions is not None and len(rows) > n_questions:
@@ -56,10 +59,30 @@ def _hf_load(hf_repo: str, split: str, n_questions=None, seed=42,
     return rows
 
 
+def _webshop_load(local_file: str, split: str, n_questions=None, seed=42, offset=0) -> list[dict]:
+    """Load a deterministic non-overlapping slice of a local goals JSON file.
+
+    The full list is shuffled once with `seed`, then sliced [offset:offset+n_questions].
+    Use offset to ensure non-overlapping train/val/test splits from the same pool.
+    """
+    path = PROJECT_DIR / local_file
+    if not path.exists():
+        print(f"  [ERROR] Local file not found: {path}")
+        sys.exit(1)
+    with open(path) as f:
+        goals = json.load(f)
+    rng = random.Random(seed)
+    rng.shuffle(goals)
+    end = (offset + n_questions) if n_questions is not None else None
+    slice_ = goals[offset:end]
+    return [{"question": g, "answer": ""} for g in slice_]
+
+
 # Maps loader keys (from config.yaml dataset_loaders) to loader callables.
-# Each callable accepts: hf_repo, split, n_questions, seed → list[dict]
 LOADERS = {
     "2wikimultihop": _hf_load,
+    "webshop_goals": _webshop_load,
+    "deepshop":      _hf_load,     # same loader — question_field/answer_field from registry
 }
 
 
@@ -111,13 +134,25 @@ def main():
             print(f"[SKIP] {name}: no loader function implemented for '{hf_key}'.")
             continue
 
-        hf_repo     = loader_registry[hf_key]["hf_repo"]
+        loader_reg  = loader_registry[hf_key]
         split       = dcfg.get("split", "validation")
         n_questions = dcfg.get("n_questions")
         seed        = dcfg.get("seed", 42)
 
-        print(f"\n[{name}]  hf={hf_repo}  split={split}  n={n_questions or 'all'}  seed={seed}")
-        rows = LOADERS[hf_key](hf_repo, split, n_questions=n_questions, seed=seed)
+        if "local_file" in loader_reg:
+            # Local file loader (e.g. webshop_goals): uses offset-based slicing
+            local_file = loader_reg["local_file"]
+            offset     = dcfg.get("offset", 0)
+            print(f"\n[{name}]  local={local_file}  offset={offset}  n={n_questions or 'all'}  seed={seed}")
+            rows = LOADERS[hf_key](local_file, split, n_questions=n_questions, seed=seed, offset=offset)
+        else:
+            # HuggingFace loader: question_field / answer_field from registry
+            hf_repo      = loader_reg["hf_repo"]
+            q_field      = loader_reg.get("question_field", "question")
+            a_field      = loader_reg.get("answer_field", "answer")  # None → no answer column
+            print(f"\n[{name}]  hf={hf_repo}  split={split}  n={n_questions or 'all'}  seed={seed}")
+            rows = LOADERS[hf_key](hf_repo, split, n_questions=n_questions, seed=seed,
+                                   question_field=q_field, answer_field=a_field)
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         with open(out_path, "w") as f:

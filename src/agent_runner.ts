@@ -7,22 +7,36 @@ import 'dotenv/config';
 
 // --- Parse CLI args ---
 const args = process.argv.slice(2);
-let QUESTION    = '';
-let AGENT_ID    = '';
-let EPISODE_ID  = '';
-let OUTPUT_DIR  = '';
+let QUESTION             = '';
+let AGENT_ID             = '';
+let EPISODE_ID           = '';
+let OUTPUT_DIR           = '';
+let START_URL            = 'https://en.wikipedia.org';
+let TASK_PROMPT_OVERRIDE = '';
+let TASK_TYPE            = 'qa';   // 'qa' | 'shop'
 
 for (let i = 0; i < args.length; i++) {
-  if (args[i] === '--question')    QUESTION   = args[++i];
-  if (args[i] === '--agent_id')    AGENT_ID   = args[++i];
-  if (args[i] === '--episode_id')  EPISODE_ID = args[++i];
-  if (args[i] === '--output_dir')  OUTPUT_DIR = args[++i];
+  if (args[i] === '--question')     QUESTION             = args[++i];
+  if (args[i] === '--agent_id')     AGENT_ID             = args[++i];
+  if (args[i] === '--episode_id')   EPISODE_ID           = args[++i];
+  if (args[i] === '--output_dir')   OUTPUT_DIR           = args[++i];
+  if (args[i] === '--start_url')    START_URL            = args[++i];
+  if (args[i] === '--task_prompt')  TASK_PROMPT_OVERRIDE = args[++i];
+  if (args[i] === '--task_type')    TASK_TYPE            = args[++i];
 }
 
 if (!QUESTION || !AGENT_ID || !EPISODE_ID || !OUTPUT_DIR) {
   console.error('[ERROR] Missing required arguments: --question, --agent_id, --episode_id, --output_dir');
   process.exit(1);
 }
+
+const TASK_PROMPT = TASK_PROMPT_OVERRIDE ||
+  `You are a research agent. Use Wikipedia to answer this question:
+  "${QUESTION}"
+
+  Browse freely. Read whatever pages you judge relevant.
+  When you have enough information, stop browsing.
+  Do not create accounts, submit forms, or leave Wikipedia.`;
 
 // --- Load page_tracer.js ---
 const __dir = path.dirname(fileURLToPath(import.meta.url));
@@ -111,28 +125,21 @@ try {
   };
 
   // --- Run the task ---
-  await page.goto('https://en.wikipedia.org', { waitUntil: 'networkidle' });
+  await page.goto(START_URL, { waitUntil: 'load', timeout: 60000 });
   const agent = new PlaywrightAgent(page);
 
   let aiActError: string | null = null;
   try {
-    await agent.aiAct(`
-      You are a research agent. Use Wikipedia to answer this question:
-      "${QUESTION}"
-
-      Browse freely. Read whatever pages you judge relevant.
-      When you have enough information, stop browsing.
-      Do not create accounts, submit forms, or leave Wikipedia.
-    `);
+    await agent.aiAct(TASK_PROMPT);
   } catch (err) {
     aiActError = String(err);
   }
 
   await harvest();  // backstop: catch any events that missed the push bridge
 
-  // --- Extract the answer (skip if aiAct failed) ---
+  // --- Extract the answer (QA tasks only; skipped for non-QA task types) ---
   let result: { answer: string; confidence: 'high' | 'medium' | 'low'; sources: string[] } | null = null;
-  if (!aiActError) {
+  if (!aiActError && TASK_TYPE === 'qa') {
     result = await agent.aiQuery<{
       answer:     string;
       confidence: 'high' | 'medium' | 'low';
@@ -171,6 +178,8 @@ try {
       model_family: process.env.MIDSCENE_MODEL_FAMILY,
       timestamp:    new Date().toISOString(),
       question:     QUESTION,
+      start_url:    START_URL,
+      task_type:    TASK_TYPE,
     },
     result,
     error:        aiActError,

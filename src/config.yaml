@@ -60,7 +60,7 @@ agents:
     env:
       MIDSCENE_MODEL_NAME:              "ByteDance-Seed/UI-TARS-1.5-7B"
       MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"
-      MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3030/v1"
+      MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3031/v1"
       MIDSCENE_MODEL_FAMILY:            "vlm-ui-tars-doubao-1.5"
       MIDSCENE_REPLANNING_CYCLE_LIMIT:  "40"
 
@@ -97,5 +97,14 @@ dataset_loaders:
   2wikimultihop:
     hf_repo: "framolfese/2WikiMultihopQA"
 
-# for shopping
-# DeepShop/DeepShop (only one train split with 150 examples)
+  # WebShop: local file already downloaded at src/web_shop_goals.json (~12k goals)
+  # Non-overlapping train/val/test slices are controlled via `offset` in the experiment config.
+  webshop_goals:
+    local_file: "web_shop_goals.json"
+
+  # DeepShop: HuggingFace, 150 examples, used as OOD only.
+  # Only has a 'train' split; question column is 'ques'.
+  deepshop:
+    hf_repo: "DeepShop/DeepShop"
+    question_field: "ques"
+    answer_field: null
