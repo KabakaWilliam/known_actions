@@ -326,7 +326,7 @@ Set in `config.yaml` (`midscene_defaults:`) or override per-agent in your experi
 
 | Setting | Effect |
 |---|---|
-| `MIDSCENE_REPLANNING_CYCLE_LIMIT` | Max planning cycles before giving up. Smaller models (8B) need more — default 20, local models use 30. |
+| `MIDSCENE_REPLANNING_CYCLE_LIMIT` | Max planning cycles before giving up. Default - 40 |
 
 ## File layout
 

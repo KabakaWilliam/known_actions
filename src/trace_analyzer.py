@@ -48,7 +48,7 @@ def extract_features(episode) -> dict:
 
     page_count = dom.get("pageCount") or len({e.get("url", "") for e in events})
 
-    ts   = [e.get("t_episode", e["t"]) for e in events]
+    ts   = [e.get("t_episode") or e.get("t", 0) for e in events]
     ieis = np.diff(ts).tolist() if len(ts) > 1 else [0]
 
     # Timing
@@ -135,9 +135,22 @@ def extract_features(episode) -> dict:
     }
 
 
-def extract_sequence(episode) -> list:
+def extract_sequence(episode) -> list[tuple[int, float]]:
+    """Return a list of (token_id, log1p_delta_t_ms) pairs.
+
+    delta_t is the gap in ms since the previous event (0 for the first).
+    log1p compresses the range: a 1000ms gap → ~6.9, a 50ms gap → ~3.9.
+    """
     events = episode.get("dom_trace", {}).get("events", [])
-    return [EVENT_VOCAB.get(e["type"], EVENT_VOCAB["<unk>"]) for e in events]
+    result = []
+    prev_t = None
+    for e in events:
+        token = EVENT_VOCAB.get(e["type"], EVENT_VOCAB["<unk>"])
+        t     = e.get("t_episode") or e.get("t", 0)
+        delta = (t - prev_t) if prev_t is not None else 0.0
+        result.append((token, float(np.log1p(max(delta, 0)))))
+        prev_t = t
+    return result
 
 
 def load_dataset(trace_dir: Path) -> dict[str, tuple]:
@@ -178,24 +191,27 @@ def load_dataset(trace_dir: Path) -> dict[str, tuple]:
 
 
 class SequenceDataset(Dataset):
-    def __init__(self, sequences, labels_encoded):
-        # sequences: list of 1-D torch.LongTensor
-        # labels_encoded: 1-D torch.LongTensor
-        self.sequences      = sequences
+    def __init__(self, tok_seqs, time_seqs, labels_encoded):
+        # tok_seqs:  list of 1-D LongTensor  (token IDs)
+        # time_seqs: list of 1-D FloatTensor (log1p delta_t per event)
+        # labels_encoded: 1-D LongTensor
+        self.tok_seqs       = tok_seqs
+        self.time_seqs      = time_seqs
         self.labels_encoded = labels_encoded
 
     def __len__(self):
-        return len(self.sequences)
+        return len(self.tok_seqs)
 
     def __getitem__(self, idx):
-        return self.sequences[idx], self.labels_encoded[idx]
+        return self.tok_seqs[idx], self.time_seqs[idx], self.labels_encoded[idx]
 
 
 def collate_fn(batch):
-    seqs, lbls = zip(*batch)
-    lengths = torch.tensor([s.size(0) for s in seqs], dtype=torch.long)
-    padded  = pad_sequence(seqs, batch_first=True, padding_value=0)
-    return padded, lengths, torch.stack(lbls)
+    toks, times, lbls = zip(*batch)
+    lengths      = torch.tensor([t.size(0) for t in toks], dtype=torch.long)
+    padded_toks  = pad_sequence(toks,  batch_first=True, padding_value=0)
+    padded_times = pad_sequence(times, batch_first=True, padding_value=0.0)
+    return padded_toks, padded_times, lengths, torch.stack(lbls)
 
 
 class AgentLSTM(nn.Module):
@@ -203,20 +219,22 @@ class AgentLSTM(nn.Module):
                  dropout=0.3):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
-        self.lstm = nn.LSTM(embed_dim, hidden_dim, num_layers=n_layers,
+        # LSTM input = token embedding (embed_dim) + log1p delta_t scalar (1)
+        self.lstm = nn.LSTM(embed_dim + 1, hidden_dim, num_layers=n_layers,
                             batch_first=True,
                             dropout=dropout if n_layers > 1 else 0)
         self.dropout = nn.Dropout(dropout)
         self.head = nn.Linear(hidden_dim, n_classes)
 
-    def forward(self, x, lengths):
-        # x: (batch, seq_len) — padded token IDs
+    def forward(self, toks, times, lengths):
+        # toks:    (batch, seq_len) — padded token IDs
+        # times:   (batch, seq_len) — padded log1p delta_t values
         # lengths: (batch,) — true sequence lengths
-        emb    = self.dropout(self.embedding(x))
-        packed = pack_padded_sequence(emb, lengths.cpu(), batch_first=True,
+        emb    = self.dropout(self.embedding(toks))          # (batch, seq, embed_dim)
+        inp    = torch.cat([emb, times.unsqueeze(-1)], dim=-1)  # (batch, seq, embed_dim+1)
+        packed = pack_padded_sequence(inp, lengths.cpu(), batch_first=True,
                                       enforce_sorted=False)
         _, (h_n, _) = self.lstm(packed)
-        # h_n: (n_layers, batch, hidden_dim) — take the last layer
         out = self.dropout(h_n[-1])
         return self.head(out)
 
@@ -233,15 +251,22 @@ _LSTM_GRID = [
 ]
 
 
+def _make_tensors(sequences):
+    """Unpack list of (token, delta_t) pairs into separate tok and time tensors."""
+    tok_tensors  = [torch.tensor([e[0] for e in s], dtype=torch.long)  for s in sequences]
+    time_tensors = [torch.tensor([e[1] for e in s], dtype=torch.float) for s in sequences]
+    return tok_tensors, time_tensors
+
+
 def _fit_lstm(seq_train, y_train, n_classes, hyperparams, n_epochs=30):
     """Train one AgentLSTM config on seq_train/y_train. Returns the trained model."""
-    device = torch.device("cpu")
+    device     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     hidden_dim = hyperparams["hidden_dim"]
     dropout    = hyperparams["dropout"]
 
-    seq_tensors = [torch.tensor(s, dtype=torch.long) for s in seq_train]
-    lbl_tensor  = torch.tensor(y_train, dtype=torch.long)
-    dl = DataLoader(SequenceDataset(seq_tensors, lbl_tensor),
+    tok_tensors, time_tensors = _make_tensors(seq_train)
+    lbl_tensor = torch.tensor(y_train, dtype=torch.long)
+    dl = DataLoader(SequenceDataset(tok_tensors, time_tensors, lbl_tensor),
                     batch_size=_LSTM_BATCH_SIZE, shuffle=True, collate_fn=collate_fn)
 
     model     = AgentLSTM(VOCAB_SIZE, _LSTM_EMBED_DIM, hidden_dim, _LSTM_N_LAYERS,
@@ -251,28 +276,30 @@ def _fit_lstm(seq_train, y_train, n_classes, hyperparams, n_epochs=30):
 
     model.train()
     for _ in range(n_epochs):
-        for padded, lengths, lbls in dl:
-            padded, lengths, lbls = padded.to(device), lengths.to(device), lbls.to(device)
+        for p_toks, p_times, lengths, lbls in dl:
+            p_toks, p_times, lengths, lbls = (p_toks.to(device), p_times.to(device),
+                                               lengths.to(device), lbls.to(device))
             optimizer.zero_grad()
-            criterion(model(padded, lengths), lbls).backward()
+            criterion(model(p_toks, p_times, lengths), lbls).backward()
             optimizer.step()
     return model
 
 
 def _eval_lstm(model, seq_eval, y_eval):
     """Evaluate a trained AgentLSTM. Returns (accuracy, predictions_list)."""
-    device = torch.device("cpu")
-    seq_tensors = [torch.tensor(s, dtype=torch.long) for s in seq_eval]
-    lbl_tensor  = torch.tensor(y_eval, dtype=torch.long)
-    dl = DataLoader(SequenceDataset(seq_tensors, lbl_tensor),
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    tok_tensors, time_tensors = _make_tensors(seq_eval)
+    lbl_tensor = torch.tensor(y_eval, dtype=torch.long)
+    dl = DataLoader(SequenceDataset(tok_tensors, time_tensors, lbl_tensor),
                     batch_size=_LSTM_BATCH_SIZE, shuffle=False, collate_fn=collate_fn)
 
     model.eval()
     all_preds, all_trues = [], []
     with torch.no_grad():
-        for padded, lengths, lbls in dl:
-            padded, lengths, lbls = padded.to(device), lengths.to(device), lbls.to(device)
-            preds = model(padded, lengths).argmax(dim=1)
+        for p_toks, p_times, lengths, lbls in dl:
+            p_toks, p_times, lengths, lbls = (p_toks.to(device), p_times.to(device),
+                                               lengths.to(device), lbls.to(device))
+            preds = model(p_toks, p_times, lengths).argmax(dim=1)
             all_preds.extend(preds.cpu().tolist())
             all_trues.extend(lbls.cpu().tolist())
 
@@ -425,6 +452,10 @@ def train(trace_dir: Path) -> None:
                 out[k] = v
         return out
 
+    # mkdir before train_lstm, which saves lstm_model.pt into this directory
+    models_dir = trace_dir / "models"
+    models_dir.mkdir(exist_ok=True)
+
     print("\nTraining LSTM ...")
     n_classes = len(le.classes_)
     if has_val:
@@ -453,8 +484,6 @@ def train(trace_dir: Path) -> None:
     clf_results["LSTM"] = lstm_result
 
     # --- save artefacts ---
-    models_dir = trace_dir / "models"
-    models_dir.mkdir(exist_ok=True)
     with open(models_dir / "classifier.pkl", "wb") as f:
         pickle.dump({"rf": best_rf, "le": le, "feat_names": feat_names}, f)
 
@@ -468,6 +497,34 @@ def train(trace_dir: Path) -> None:
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\nSaved: {results_path}  traces/models/classifier.pkl  traces/models/lstm_model.pt")
+
+    # --- print classification reports ---
+    def _print_report(model_name, split_name, report):
+        print(f"\n{'─' * 60}")
+        print(f"  {model_name}  [{split_name}]")
+        print(f"{'─' * 60}")
+        print(f"  {'':20}  {'precision':>9}  {'recall':>9}  {'f1-score':>9}  {'support':>7}")
+        print()
+        for cls in le.classes_:
+            if cls not in report: continue
+            r = report[cls]
+            print(f"  {cls:>20}  {r['precision']:>9.3f}  {r['recall']:>9.3f}"
+                  f"  {r['f1-score']:>9.3f}  {int(r['support']):>7d}")
+        print()
+        for avg in ("macro avg", "weighted avg"):
+            if avg not in report: continue
+            r = report[avg]
+            print(f"  {avg:>20}  {r['precision']:>9.3f}  {r['recall']:>9.3f}"
+                  f"  {r['f1-score']:>9.3f}  {int(r['support']):>7d}")
+        if "accuracy" in report:
+            n = int(sum(report[c]["support"] for c in le.classes_ if c in report))
+            print(f"\n  {'accuracy':>20}  {'':>9}  {'':>9}  {report['accuracy']:>9.3f}  {n:>7d}")
+
+    for model_name, res in clf_results.items():
+        for split_name in ("val", "test"):
+            report = res.get(f"{split_name}_report")
+            if report:
+                _print_report(model_name, split_name, report)
 
 
 if __name__ == "__main__":

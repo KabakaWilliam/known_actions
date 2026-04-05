@@ -21,7 +21,7 @@ run:
 # specific MidScene settings for this experiment only.
 # =============================================================================
 agents:
-  # - agent_id: qwen3vl_8b
+  - agent_id: qwen3vl_8b
     # env:                          # uncomment to override for this experiment
     #   MIDSCENE_REPLANNING_CYCLE_LIMIT: "40"
 
@@ -30,7 +30,7 @@ agents:
   #       MIDSCENE_REPLANNING_CYCLE_LIMIT: "30"
   # - agent_id: qwen25vl_7b
   # - agent_id: qwen35_7b
-  - agent_id: uitars_7b
+  # - agent_id: uitars_7b
   # - agent_id: claude_sonnet
   # - agent_id: gemini_flash
 
