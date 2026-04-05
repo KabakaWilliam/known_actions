@@ -358,3 +358,18 @@ src/
         ├── classifier.pkl
         └── lstm_model.pt
 ```
+## Results
+
+Classifier performance evaluated on three LLM agents using behavioral features alone, without access to question text or page content.
+
+**Dataset:** 444 train episodes, 223 validation episodes, 219 test episodes  
+**Agents:** gpt54, qwen3vl_8b, uitars_7b
+
+| Model | Type | Test Accuracy | Test F1-Weighted |
+|---|---|---|---|
+| Random Forest | Tree ensemble | **0.968** | 0.968 |
+| Gradient Boosting | Boosted trees | 0.963 | 0.964 |
+| LSTM | Sequence model | 0.922 | 0.923 |
+
+**Top 5 Random Forest Features:** `std_iei_ms` (0.177), `p10_iei_ms` (0.099), `click_y_std` (0.092), `mean_iei_ms` (0.091), `p90_iei_ms` (0.082)
+```

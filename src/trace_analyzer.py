@@ -48,7 +48,7 @@ def extract_features(episode) -> dict:
 
     page_count = dom.get("pageCount") or len({e.get("url", "") for e in events})
 
-    ts   = [e.get("t_episode") or e.get("t", 0) for e in events]
+    ts   = [e.get("t_episode") or e.get("t") or 0 for e in events]
     ieis = np.diff(ts).tolist() if len(ts) > 1 else [0]
 
     # Timing
@@ -150,7 +150,7 @@ def extract_sequence(episode) -> list[tuple[int, float, float, float, float]]:
     prev_t = None
     for e in events:
         token = EVENT_VOCAB.get(e["type"], EVENT_VOCAB["<unk>"])
-        t     = e.get("t_episode") or e.get("t", 0)
+        t     = e.get("t_episode") or e.get("t") or 0
         delta = (t - prev_t) if prev_t is not None else 0.0
         f0    = float(np.log1p(max(delta, 0)))
         f1    = float(np.log1p(max(t, 0)))
@@ -260,10 +260,12 @@ class AgentLSTM(nn.Module):
         return self.head(combined)
 
 
-_LSTM_EMBED_DIM  = 16
-_LSTM_N_LAYERS   = 2
-_LSTM_BATCH_SIZE = 16
-_LSTM_LR         = 1e-3
+_LSTM_EMBED_DIM   = 16
+_LSTM_N_LAYERS    = 2
+_LSTM_BATCH_SIZE  = 16
+_LSTM_LR          = 1e-3
+_LSTM_WEIGHT_DECAY = 1e-4
+_LSTM_N_EPOCHS    = 50
 _LSTM_GRID = [
     {"hidden_dim": 64,  "dropout": 0.2},
     {"hidden_dim": 64,  "dropout": 0.4},
@@ -280,7 +282,7 @@ def _make_tensors(sequences):
     return tok_tensors, time_tensors
 
 
-def _fit_lstm(seq_train, X_train, y_train, n_classes, hyperparams, n_epochs=30):
+def _fit_lstm(seq_train, X_train, y_train, n_classes, hyperparams, n_epochs=_LSTM_N_EPOCHS):
     """Train one AgentLSTM config. X_train is a numpy array (N, n_rf_features)."""
     device     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     hidden_dim = hyperparams["hidden_dim"]
@@ -295,7 +297,7 @@ def _fit_lstm(seq_train, X_train, y_train, n_classes, hyperparams, n_epochs=30):
 
     model     = AgentLSTM(VOCAB_SIZE, _LSTM_EMBED_DIM, hidden_dim, _LSTM_N_LAYERS,
                           n_classes, n_rf_features=n_rf, dropout=dropout).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=_LSTM_LR)
+    optimizer = torch.optim.Adam(model.parameters(), lr=_LSTM_LR, weight_decay=_LSTM_WEIGHT_DECAY)
     criterion = nn.CrossEntropyLoss()
 
     model.train()
@@ -341,7 +343,7 @@ def _eval_lstm(model, seq_eval, X_eval, y_eval):
 def train_lstm(seq_train, X_train, y_train,
                seq_val,   X_val,   y_val,
                seq_test,  X_test,  y_test,
-               n_classes, n_epochs=30) -> dict:
+               n_classes, n_epochs=_LSTM_N_EPOCHS) -> dict:
     """Grid search over hidden_dim × dropout, pick best by val accuracy.
 
     Fits final model on train only. Returns best_params, val_report, test_report.

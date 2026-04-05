@@ -96,3 +96,6 @@ agents:
 dataset_loaders:
   2wikimultihop:
     hf_repo: "framolfese/2WikiMultihopQA"
+
+# for shopping
+# DeepShop/DeepShop (only one train split with 150 examples)
