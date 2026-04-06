@@ -28,9 +28,10 @@ agents:
   # - agent_id: gpt54
   #   env:                          
   #       MIDSCENE_REPLANNING_CYCLE_LIMIT: "30"
+  - agent_id: qwen3vl_30b_a3b
   # - agent_id: qwen25vl_7b
   # - agent_id: qwen35_7b
-  - agent_id: uitars_7b
+  # - agent_id: uitars_7b
   # - agent_id: claude_sonnet
   # - agent_id: gemini_flash
 
@@ -48,32 +49,32 @@ agents:
 #   n_questions  → sample size (omit or null = use all)
 #   seed         → random seed for reproducible sampling
 # =============================================================================
-# datasets:
+datasets:
   # - name: custom
   #   source: builtin
 
-  # - name: 2wikimultihop_val
-  #   source: datasets/2wikimultihop_val.json
-  #   hf_dataset: 2wikimultihop
-  #   split: validation
-  #   n_questions: 75
-  #   seed: 42
+  - name: 2wikimultihop_val
+    source: datasets/2wikimultihop_val.json
+    hf_dataset: 2wikimultihop
+    split: validation
+    n_questions: 75
+    seed: 42
 
-  # # --- Additional splits (uncomment + run prep_datasets.py to activate) ---
+  # --- Additional splits (uncomment + run prep_datasets.py to activate) ---
 
-  # - name: 2wikimultihop_train
-  #   source: datasets/2wikimultihop_train.json
-  #   hf_dataset: 2wikimultihop
-  #   split: train
-  #   n_questions: 150
-  #   seed: 42
+  - name: 2wikimultihop_train
+    source: datasets/2wikimultihop_train.json
+    hf_dataset: 2wikimultihop
+    split: train
+    n_questions: 150
+    seed: 42
 
-  # - name: 2wikimultihop_test
-  #   source: datasets/2wikimultihop_test.json
-  #   hf_dataset: 2wikimultihop
-  #   split: test
-  #   n_questions: 75
-  #   seed: 42
+  - name: 2wikimultihop_test
+    source: datasets/2wikimultihop_test.json
+    hf_dataset: 2wikimultihop
+    split: test
+    n_questions: 75
+    seed: 42
 
 # =============================================================================
 # Amazon / WebShop shopping experiment
@@ -81,7 +82,7 @@ agents:
 # First prep datasets: python prep_datasets.py --config custom_config.yaml
 # =============================================================================
 
-datasets:
+# datasets:
   # WebShop train/val/test — non-overlapping slices from the same 12k pool
   # seed=42 shuffles once; offset ensures no question appears in two splits
   - name: webshop_train

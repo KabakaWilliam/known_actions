@@ -167,17 +167,21 @@ def extract_sequence(episode) -> list[tuple[int, float, float, float, float]]:
 
 
 def load_dataset(trace_dir: Path,
-                 include_datasets: list[str] | None = None,
+                 train_datasets: list[str] | None = None,
                  ood_datasets: list[str] | None = None,
                  ) -> tuple[dict[str, tuple], dict[str, set]]:
-    """Load all episode traces, bucketed by split inferred from the path.
+    """Load all episode traces, bucketed by split.
 
     Path pattern: traces/{agent_id}/{dataset_name}/{timestamp}/{episode_id}.json
-    Split is determined by the suffix of dataset_name:
-      _train → "train",  _val → "val",  _test → "test",  _ood → "ood"
 
-    include_datasets: if given, only load datasets whose base name
-      (suffix stripped) is in this list. e.g. ["2wikimultihop"] skips webshop_*.
+    train_datasets: base names (suffix stripped) whose _train/_val/_test traces
+      go into the train/val/test buckets. e.g. ["2wikimultihop"] loads only
+      2wikimultihop_* traces for training.
+
+    ood_datasets: base names whose traces all go into the OOD bucket regardless
+      of suffix. e.g. ["webshop"] loads webshop_train/val/test all as OOD.
+
+    If both are None: legacy mode — all datasets, split by suffix.
 
     Returns (splits, ds_names) where:
       splits   = {"train": (features, sequences, labels), "val": ..., ...}
@@ -192,24 +196,29 @@ def load_dataset(trace_dir: Path,
     ds_names: dict[str, set] = {"train": set(), "val": set(), "test": set(), "ood": set()}
     for path in sorted(trace_dir.rglob("*.json")):
         rel_parts = path.relative_to(trace_dir).parts
-        if rel_parts[0] == "models":
-            continue  # skip results.json / classifier artefacts
+        if rel_parts[0].startswith("models"):
+            continue  # skip results.json / classifier artefacts (models/, models_v1/, etc.)
         if len(rel_parts) < 2:
             warnings.warn(f"Skipping {path}: unexpected path depth")
             continue
         dataset_name = rel_parts[1]
-        split = _infer_split(dataset_name)
-        if split is None:
-            warnings.warn(f"Skipping {path}: unrecognised dataset '{dataset_name}'")
-            continue
-        if ood_datasets is not None:
-            base = dataset_name.rsplit("_", 1)[0]
-            if base in ood_datasets:
-                split = "ood"
-        if include_datasets is not None:
-            base = dataset_name.rsplit("_", 1)[0]
-            if base not in include_datasets:
+        base = dataset_name.rsplit("_", 1)[0]
+
+        # Determine which bucket this trace belongs to
+        if ood_datasets is not None and base in ood_datasets:
+            split = "ood"
+        elif train_datasets is not None and base in train_datasets:
+            split = _infer_split(dataset_name)
+            if split is None or split == "ood":
+                continue  # skip _ood-suffixed dirs when using explicit train list
+        elif train_datasets is None and ood_datasets is None:
+            # Legacy: accept all datasets, bucket by suffix
+            split = _infer_split(dataset_name)
+            if split is None:
+                warnings.warn(f"Skipping {path}: unrecognised dataset '{dataset_name}'")
                 continue
+        else:
+            continue  # not in either explicit list — skip
         try:
             with open(path) as f:
                 episode = json.load(f)
@@ -410,9 +419,9 @@ GB_PARAM_GRID = {
 
 
 def train(trace_dir: Path, tag: str | None = None,
-          include_datasets: list[str] | None = None,
+          train_datasets: list[str] | None = None,
           ood_datasets: list[str] | None = None) -> None:
-    splits, ds_names = load_dataset(trace_dir, include_datasets=include_datasets,
+    splits, ds_names = load_dataset(trace_dir, train_datasets=train_datasets,
                                     ood_datasets=ood_datasets)
     feat_train, seq_train, lbl_train = splits["train"]
     feat_val,   seq_val,   lbl_val   = splits["val"]
@@ -637,12 +646,11 @@ if __name__ == "__main__":
         epilog=(
             "Examples:\n"
             "  python trace_analyzer.py\n"
-            "  python trace_analyzer.py --datasets 2wikimultihop\n"
-            "  python trace_analyzer.py --datasets webshop\n"
-            "  python trace_analyzer.py --datasets webshop deepshop --ood-datasets deepshop\n" #train/val/test on webshop, ood on deepshop
-            "  python trace_analyzer.py --datasets 2wikimultihop webshop --ood-datasets webshop --tag wiki_ood_amazon\n"#train/val/test on 2wikimultihop, ood on webshop, save as wiki_ood_amazon
-            # need to have train/val/test on X, ood flag on Y, ood name for Yp
-
+            "  python trace_analyzer.py --train-datasets 2wikimultihop\n"
+            "  python trace_analyzer.py --train-datasets webshop\n"
+            "  python trace_analyzer.py --train-datasets webshop --ood-datasets deepshop\n"
+            "  python trace_analyzer.py --train-datasets 2wikimultihop --ood-datasets webshop --tag wiki_ood_amazon\n"
+            "  python trace_analyzer.py --train-datasets webshop --ood-datasets 2wikimultihop --tag amazon_ood_wiki\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -650,14 +658,14 @@ if __name__ == "__main__":
                         help="Root traces directory (default: ./traces)")
     parser.add_argument("--tag", type=str, default=None,
                         help="Models subdirectory name. Default: auto-derived from train dataset names.")
-    parser.add_argument("--datasets", nargs="+", default=None,
+    parser.add_argument("--train-datasets", nargs="+", default=None,
                         metavar="NAME",
-                        help="Base dataset names to include, e.g. 2wikimultihop webshop. "
+                        help="Base dataset names for train/val/test splits, e.g. --train-datasets 2wikimultihop. "
                              "Default: all datasets found in traces-dir.")
     parser.add_argument("--ood-datasets", nargs="+", default=None,
                         metavar="NAME",
-                        help="Base dataset names to force into OOD split regardless of suffix, "
+                        help="Base dataset names to load as OOD (all suffixes → OOD bucket), "
                              "e.g. --ood-datasets webshop")
     cli = parser.parse_args()
-    train(cli.traces_dir, tag=cli.tag, include_datasets=cli.datasets,
+    train(cli.traces_dir, tag=cli.tag, train_datasets=cli.train_datasets,
           ood_datasets=cli.ood_datasets)

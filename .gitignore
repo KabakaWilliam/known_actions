@@ -2,6 +2,7 @@
 .claude
 playwright-sandbox
 
+results_v1
 src/web_shop_goals.json
 src/datasets
 src/traces

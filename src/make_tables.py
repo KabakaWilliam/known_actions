@@ -1,32 +1,37 @@
 """
-make_tables.py — Generate publication-ready LaTeX tables from trace_analyzer results.
+make_tables.py — Generate publication-ready LaTeX tables from multi-domain trace_analyzer results.
 
 Usage:
-    python make_tables.py                    # reads ./traces/models/
+    python make_tables.py                    # reads ./traces/models/(wiki_ood_amazon|webshop)/results.json
     python make_tables.py /path/to/traces    # custom traces dir
 
 Outputs:
-    traces/models/table_main.tex       — main accuracy / macro-F1 table
-    traces/models/table_per_class.tex  — per-agent F1 breakdown table
+    traces/models/table_main.tex       — main accuracy / F1 table across domains
+    traces/models/table_per_class.tex  — per-agent F1 breakdown by domain
 """
 
 import json, sys
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Configuration — maps experiment tag to human-readable column labels
-# ---------------------------------------------------------------------------
-
+# Experiment tags and domain labels
 EXPERIMENTS = {
     "wiki_ood_amazon": {
-        "test_label": "Wiki (in-domain)",
-        "ood_label":  r"Wiki $\to$ Amazon (OOD)",
+        "test_label": r"\textbf{Wiki (in-dom.)}",
+        "ood_label":  r"\textbf{Wiki $\to$ Amazon}",
     },
     "webshop": {
-        "test_label": "Amazon (in-domain)",
-        "ood_label":  r"Amazon $\to$ DeepShop (OOD)",
+        "test_label": r"\textbf{Amazon (in-dom.)}",
+        "ood_label":  r"\textbf{Amazon $\to$ DeepShop}",
     },
 }
+
+# Column order: (experiment_tag, split_type)
+CONDITION_ORDER = [
+    ("wiki_ood_amazon", "test"),
+    ("wiki_ood_amazon", "ood"),
+    ("webshop",         "test"),
+    ("webshop",         "ood"),
+]
 
 MODEL_KEYS    = ["RandomForest", "GradientBoosting", "LSTM"]
 MODEL_DISPLAY = {
@@ -35,22 +40,13 @@ MODEL_DISPLAY = {
     "LSTM":             "LSTM",
 }
 
-# Column order for both tables
-CONDITION_ORDER = [
-    ("wiki_ood_amazon", "test"),
-    ("wiki_ood_amazon", "ood"),
-    ("webshop",         "test"),
-    ("webshop",         "ood"),
-]
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def load_results(traces_dir: Path, tag: str) -> dict:
-    path = traces_dir / "models" / tag / "results.json"
-    with open(path) as f:
+def load_results(results_path: Path) -> dict:
+    with open(results_path) as f:
         return json.load(f)
 
 
@@ -62,66 +58,69 @@ def fmt(x) -> str:
 
 
 def bold_max(values: list) -> list[str]:
-    """Return formatted strings; bold the maximum (ignoring '--')."""
-    floats = [float(v) if v != "--" else None for v in values]
-    valid  = [v for v in floats if v is not None]
+    """Bold the maximum value in a list."""
+    vals_clean = []
+    for v in values:
+        v_str = v.replace(r"\textbf{", "").replace("}", "")
+        try:
+            vals_clean.append(float(v_str))
+        except:
+            vals_clean.append(None)
+    
+    valid = [v for v in vals_clean if v is not None]
     if not valid:
         return values
+    
     best = max(valid)
-    out  = []
-    for v, f in zip(values, floats):
-        if f is not None and abs(f - best) < 1e-9:
-            out.append(r"\textbf{" + v + "}")
+    out = []
+    for v_raw, v_num in zip(values, vals_clean):
+        v_str = v_raw.replace(r"\textbf{", "").replace("}", "")
+        if v_num is not None and abs(v_num - best) < 1e-6:
+            out.append(r"\textbf{" + v_str + "}")
         else:
-            out.append(v)
+            out.append(v_str)
     return out
 
 
-def get_metric(report, key: str):
-    """Safely extract a scalar from a classification report dict."""
-    if report is None:
+def get_report(results_map: dict, tag: str, model: str, split: str):
+    """Get test or ood report for a model."""
+    if tag not in results_map or model not in results_map[tag].get("models", {}):
         return None
-    entry = report.get(key)
-    if entry is None:
-        return None
-    if isinstance(entry, dict):
-        return entry.get("f1-score")
-    return entry   # scalar (accuracy)
-
-
-def get_report(results: dict, model: str, split: str):
-    """Return the report dict for a given model and split name."""
-    return results.get("models", {}).get(model, {}).get(f"{split}_report")
+    report_key = f"{split}_report"
+    return results_map[tag]["models"][model].get(report_key)
 
 
 # ---------------------------------------------------------------------------
-# Table 1 — main results: accuracy + macro F1
+# Table 1 — main results: accuracy + macro F1 across domains
 # ---------------------------------------------------------------------------
 
 def make_main_table(results_map: dict) -> str:
     # Column headers
     cond_labels = []
     for tag, split in CONDITION_ORDER:
-        label_key = "test_label" if split == "test" else "ood_label"
-        cond_labels.append(EXPERIMENTS[tag][label_key])
+        if split == "test":
+            cond_labels.append(EXPERIMENTS[tag]["test_label"])
+        else:
+            cond_labels.append(EXPERIMENTS[tag]["ood_label"])
 
-    n_conds = len(CONDITION_ORDER)   # 4
+    n_conds = len(CONDITION_ORDER)
 
     lines = []
-    lines.append(r"\begin{table*}[t]")
+    lines.append(r"\begin{table}[h!]")
     lines.append(r"\caption{Agent identification accuracy (\%) and macro F1 (\%) across domains. "
                  r"In-domain = held-out test split from training distribution. "
                  r"OOD = domain not seen during training.}")
     lines.append(r"\label{tab:main}")
     lines.append(r"\centering")
+    lines.append(r"\resizebox{\textwidth}{!}{%")
     lines.append(r"\begin{tabular}{l " + " cc" * n_conds + "}")
     lines.append(r"\toprule")
 
-    # Multi-column header row
+    # Multi-column header
     header_cols = " & ".join(
-        r"\multicolumn{2}{c}{\textbf{" + lbl + "}}" for lbl in cond_labels
+        r"\multicolumn{2}{c}{" + lbl + "}" for lbl in cond_labels
     )
-    lines.append(r" & " + header_cols + r" \\")
+    lines.append(" & " + header_cols + r" \\")
 
     # cmidrule under each pair
     cmidrules = []
@@ -131,27 +130,21 @@ def make_main_table(results_map: dict) -> str:
         cmidrules.append(rf"\cmidrule(lr){{{lo}-{hi}}}")
     lines.append("".join(cmidrules))
 
-    # Sub-header: Acc / F1 pairs
+    # Sub-header
     sub = r"\textbf{Model}" + " & Acc & F1" * n_conds + r" \\"
     lines.append(sub)
     lines.append(r"\midrule")
 
-    # Data rows — collect all values first for per-column bolding
-    # Shape: [model_idx][condition_idx * 2 + {0=acc, 1=f1}]
+    # Collect all data first for per-column bolding
     all_vals = []
     for mkey in MODEL_KEYS:
         row = []
         for tag, split in CONDITION_ORDER:
-            report = get_report(results_map[tag], mkey, split)
-            acc = fmt(get_metric(report, "accuracy"))
-            f1  = fmt(get_metric(report.get("macro avg") if report else None, None)
-                      if report and isinstance(report.get("macro avg"), dict)
-                      else None)
-            # cleaner extraction:
+            report = get_report(results_map, tag, mkey, split)
             if report:
                 acc = fmt(report.get("accuracy"))
-                ma  = report.get("macro avg", {})
-                f1  = fmt(ma.get("f1-score") if isinstance(ma, dict) else None)
+                ma = report.get("macro avg", {})
+                f1 = fmt(ma.get("f1-score") if isinstance(ma, dict) else None)
             else:
                 acc, f1 = "--", "--"
             row.extend([acc, f1])
@@ -161,17 +154,19 @@ def make_main_table(results_map: dict) -> str:
     n_cols = len(all_vals[0])
     for col_i in range(n_cols):
         col_vals = [all_vals[r][col_i] for r in range(len(MODEL_KEYS))]
-        bolded   = bold_max(col_vals)
+        bolded = bold_max(col_vals)
         for r in range(len(MODEL_KEYS)):
             all_vals[r][col_i] = bolded[r]
 
+    # Data rows
     for mkey, row in zip(MODEL_KEYS, all_vals):
         cells = " & ".join(row)
         lines.append(f"{MODEL_DISPLAY[mkey]:20s} & {cells} \\\\")
 
     lines.append(r"\bottomrule")
-    lines.append(r"\end{tabular}")
-    lines.append(r"\end{table*}")
+    lines.append(r"\end{tabular}%")
+    lines.append(r"}")
+    lines.append(r"\end{table}")
     return "\n".join(lines)
 
 
@@ -180,57 +175,60 @@ def make_main_table(results_map: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def make_per_class_table(results_map: dict) -> str:
-    # Collect all agent names across experiments
-    agents: list[str] = []
+    # Collect all unique agents across experiments
+    agents = []
     for tag in EXPERIMENTS:
-        for name in results_map[tag].get("class_names", []):
-            if name not in agents:
-                agents.append(name)
+        if tag in results_map:
+            for name in results_map[tag].get("class_names", []):
+                if name not in agents:
+                    agents.append(name)
 
-    n_conds = len(CONDITION_ORDER)
+    # Column abbreviations with line breaks
+    abbrev = {
+        ("wiki_ood_amazon", "test"): r"\makecell{\textbf{Wiki}\\(in-dom.)}",
+        ("wiki_ood_amazon", "ood"):  r"\makecell{\textbf{Wiki}$\to$\\\textbf{Amazon}}",
+        ("webshop",         "test"): r"\makecell{\textbf{Amazon}\\(in-dom.)}",
+        ("webshop",         "ood"):  r"\makecell{\textbf{Amazon}$\to$\\\textbf{DeepShop}}",
+    }
 
     lines = []
-    lines.append(r"\begin{table}[t]")
+    lines.append(r"\begin{table}[h!]")
     lines.append(r"\caption{Per-agent F1 score (\%) by training/evaluation condition.}")
     lines.append(r"\label{tab:per-class}")
     lines.append(r"\centering")
-    # Need makecell for line breaks in header
-    lines.append(r"\setlength{\tabcolsep}{4pt}")
-    lines.append(r"\begin{tabular}{l " + "c " * n_conds + "}")
+    lines.append(r"\begin{tabular}{l c c c c}")
     lines.append(r"\toprule")
 
-    # Column headers (abbreviated, two-line)
-    abbrev = {
-        ("wiki_ood_amazon", "test"): r"\makecell{Wiki\\(in-dom.)}",
-        ("wiki_ood_amazon", "ood"):  r"\makecell{Wiki$\to$\\Amazon}",
-        ("webshop",         "test"): r"\makecell{Amazon\\(in-dom.)}",
-        ("webshop",         "ood"):  r"\makecell{Amazon$\to$\\DeepShop}",
-    }
-    header = r"\textbf{Agent}" + " & " + " & ".join(abbrev[c] for c in CONDITION_ORDER)
+    # Header
+    header = r"\textbf{Agent}"
+    for tag, split in CONDITION_ORDER:
+        header += " & " + abbrev[(tag, split)]
     lines.append(header + r" \\")
     lines.append(r"\midrule")
 
+    # For each model, print its agents' F1 scores
     for mkey in MODEL_KEYS:
-        lines.append(rf"\multicolumn{{{n_conds + 1}}}{{l}}{{\textit{{{MODEL_DISPLAY[mkey]}}}}}" + r" \\")
+        lines.append(rf"\multicolumn{{5}}{{l}}{{\textit{{{MODEL_DISPLAY[mkey]}}}}}" + r" \\")
 
-        # Collect per-agent per-condition F1
-        agent_vals: dict[str, list[str]] = {a: [] for a in agents}
+        # Collect F1 per agent per condition
+        agent_vals = {a: [] for a in agents}
         for tag, split in CONDITION_ORDER:
-            report = get_report(results_map[tag], mkey, split)
+            report = get_report(results_map, tag, mkey, split)
             for agent in agents:
                 if report and agent in report and isinstance(report[agent], dict):
-                    v = fmt(report[agent].get("f1-score"))
+                    f1 = fmt(report[agent].get("f1-score"))
                 else:
-                    v = "--"
-                agent_vals[agent].append(v)
+                    f1 = "--"
+                agent_vals[agent].append(f1)
 
         # Bold max per column
-        for col_i in range(n_conds):
+        for col_i in range(len(CONDITION_ORDER)):
             col_vals = [agent_vals[a][col_i] for a in agents]
-            bolded   = bold_max(col_vals)
+            bolded = bold_max(col_vals)
             for a, bv in zip(agents, bolded):
                 agent_vals[a][col_i] = bv
 
+        # Print agents
         for agent in agents:
             label = r"\quad " + agent.replace("_", r"\_")
             cells = " & ".join(agent_vals[agent])
@@ -252,13 +250,18 @@ def make_per_class_table(results_map: dict) -> str:
 def main():
     traces_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("./traces")
 
-    missing = [tag for tag in EXPERIMENTS if not (traces_dir / "models" / tag / "results.json").exists()]
-    if missing:
-        print(f"Missing results for experiments: {missing}")
-        print(f"Expected at: {traces_dir}/models/<tag>/results.json")
-        sys.exit(1)
+    # Load all experiment results
+    results_map = {}
+    for tag in EXPERIMENTS:
+        path = traces_dir / "models" / tag / "results.json"
+        if path.exists():
+            results_map[tag] = load_results(path)
+        else:
+            print(f"Warning: {path} not found")
 
-    results_map = {tag: load_results(traces_dir, tag) for tag in EXPERIMENTS}
+    if not results_map:
+        print(f"No results found in {traces_dir}/models/")
+        sys.exit(1)
 
     table1 = make_main_table(results_map)
     table2 = make_per_class_table(results_map)

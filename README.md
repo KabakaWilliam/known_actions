@@ -1,6 +1,6 @@
-# Known Actions: Agent Trace Recorder
+# Known Actions: Agent Traces As SideChannels
 
-Records Wikipedia browsing traces from LLM agents and trains classifiers to predict which agent produced each trace from behavioral patterns alone — without looking at the content of what was searched or read.
+Records Wikipedia and Amazon browsing traces from LLM agents and trains classifiers to predict which agent produced each trace from behavioral patterns alone — without looking at the content of what was searched or read.
 
 ## How it works
 
@@ -24,8 +24,9 @@ Records Wikipedia browsing traces from LLM agents and trains classifiers to pred
 │  │     records: clicks · scrolls · keypresses · focus          │
 │  │               navigations · beforeunload (scroll at exit)   │
 │  │     (no search terms, no content — behavior only)           │
-│  ├── navigates to en.wikipedia.org                              │
-│  ├── calls MidScene aiAct() with the question                   │
+│  ├── navigates to START_URL (default: en.wikipedia.org)         │
+│  │     waitUntil: 'load' — compatible with ad-heavy sites      │
+│  ├── calls MidScene aiAct() with the task prompt                │
 │  │     the LLM browses freely, following links across pages     │
 │  │     on failure: partial trace saved with error field set     │
 │  ├── single backstop harvest() for beforeunload edge cases      │
@@ -35,23 +36,52 @@ Records Wikipedia browsing traces from LLM agents and trains classifiers to pred
                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  trace_analyzer.py                                              │
-│  ├── Random Forest  on 27 hand-crafted behavioral features      │
-│  └── LSTM           on raw event-token sequences (6 token types)│
-│  both evaluated with 5-fold stratified cross-validation         │
-│  outputs: traces/models/classifier.pkl · lstm_model.pt          │
+│  ├── Random Forest  on 29 hand-crafted behavioral features      │
+│  ├── Gradient Boosting on the same 29 features                  │
+│  └── LSTM on raw event-token sequences (7 token types)          │
+│       + RF features injected at final hidden state              │
+│       + 4 per-event continuous scalars (timing, position)       │
+│  evaluated on held-out test split + optional OOD domain         │
+│  outputs: traces/models/{tag}/classifier.pkl · lstm_model.pt    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+## Results
+
+Classifier performance evaluated on three LLM agents using behavioral features alone, without access to question text or page content.
+
+### Wikipedia (in-domain) + Amazon OOD
+
+Trained on Wikipedia (2WikiMultihopQA). Agents: gpt54, qwen3vl_8b, uitars_7b.
+
+| Model | Wiki Test Acc | Wiki Test F1 | Amazon OOD Acc | Amazon OOD F1 |
+|---|---|---|---|---|
+| Random Forest | **96.8** | **96.8** | **73.6** | **73.3** |
+| Gradient Boosting | 96.4 | 96.4 | 71.1 | 71.8 |
+| LSTM | 91.9 | 91.8 | 69.4 | 69.8 |
+
+### Amazon (in-domain) + DeepShop OOD
+
+Trained on WebShop/Amazon shopping traces.
+
+| Model | Amazon Test Acc | Amazon Test F1 | DeepShop OOD Acc | DeepShop OOD F1 |
+|---|---|---|---|---|
+| Random Forest | 92.8 | 92.8 | 84.9 | 84.8 |
+| Gradient Boosting | **93.7** | **93.7** | **86.8** | **86.7** |
+| LSTM | 88.7 | 88.6 | 86.3 | 86.1 |
+
+**Top 5 Random Forest Features (Wikipedia):** `std_iei_ms` (0.177), `p10_iei_ms` (0.099), `click_y_std` (0.092), `mean_iei_ms` (0.091), `p90_iei_ms` (0.082)
+
 ### What is an episode?
 
-An **episode** is one complete browsing session: one agent, one question, navigating Wikipedia from scratch until it has an answer. `episodes_per_combo` controls how many times the same *(agent × question)* pair is repeated — because LLM browsing is stochastic, multiple reps capture behavioral variance and give the classifier more training data.
+An **episode** is one complete browsing session: one agent, one question/task, navigating from scratch until complete. `episodes_per_combo` controls how many times the same *(agent × question)* pair is repeated — because LLM browsing is stochastic, multiple reps capture behavioral variance and give the classifier more training data.
 
 Each episode produces one `.json` trace file:
 
 | Field | Contents |
 |---|---|
-| `meta` | model name, agent id, dataset name, question, timestamp |
-| `result` | the agent's answer, confidence, Wikipedia sources cited — `null` if `aiAct` failed |
+| `meta` | model name, agent id, dataset name, question, start_url, task_type, timestamp |
+| `result` | the agent's answer, confidence, sources cited — `null` if `aiAct` failed |
 | `error` | error message string if `aiAct` threw, otherwise `null` |
 | `midscene_log` | high-level MidScene action log — what the LLM decided to do |
 | `dom_trace` | low-level DOM events — clicks, scrolls, keypresses, navigations |
@@ -75,13 +105,13 @@ The classifiers see only `dom_trace` events — they never see the question text
 
 ### Timeline anchoring
 
-Each Wikipedia page reload reinitialises the in-page timer (`t` restarts at 0). `agent_runner.ts` stamps `t_episode = Date.now() - episodeStart` on every event when it arrives via the `__pushTraceEvent` CDP bridge — giving a single monotonic timeline across all pages in a session without any per-page offset arithmetic.
+Each page reload reinitialises the in-page timer (`t` restarts at 0). `agent_runner.ts` stamps `t_episode = Date.now() - episodeStart` on every event when it arrives via the `__pushTraceEvent` CDP bridge — giving a single monotonic timeline across all pages in a session without any per-page offset arithmetic.
 
 HTTP navigation events are captured directly by Playwright's `framenavigated` listener (not by the in-page script), so they are never lost to page reloads.
 
 ## Behavioral features
 
-`trace_analyzer.py` extracts 29 features per episode for the Random Forest / Gradient Boosting classifiers. The LSTM operates on the raw token sequence (7 token types, including `focus`).
+`trace_analyzer.py` extracts 29 features per episode for the Random Forest / Gradient Boosting classifiers. The LSTM operates on the raw token sequence (7 token types, including `focus`) augmented with per-event continuous scalars and RF features injected at the final hidden state.
 
 ### Volume
 
@@ -139,6 +169,19 @@ All timing uses `t_episode` — monotonic milliseconds from episode start.
 | `midscene_per_page` | `n_midscene_actions / page_count` |
 | `focus_per_page` | `n_focus / page_count` (how often the agent re-focuses the search box per page) |
 
+### LSTM sequence features
+
+Each event in the sequence includes 4 per-event continuous scalars alongside the token type:
+
+| Scalar | Description |
+|---|---|
+| `log1p(delta_t)` | Log inter-event gap in ms |
+| `log1p(t_episode)` | Log absolute time since episode start |
+| `scroll_pct / 100` | Scroll depth normalized to [0, 1] (scroll/beforeunload events; 0 otherwise) |
+| `x / 1280` or `y / 800` | Normalized click position (click events; 0 otherwise) |
+
+At the final hidden state, all 29 aggregate RF features (StandardScaler-normalized) are concatenated before the classification head.
+
 ## Configuration
 
 The system uses two config files:
@@ -188,6 +231,31 @@ datasets:
 
 Traces land in `traces/{agent_id}/{dataset_name}/{timestamp}/`.
 
+### Shopping domain config
+
+For Amazon/WebShop-style tasks, add `start_url`, `task_type`, and `task_prompt_template` to the dataset entry:
+
+```yaml
+datasets:
+  - name: webshop_train
+    source: datasets/webshop_train.json
+    hf_dataset: webshop_goals
+    n_questions: 150
+    seed: 42
+    offset: 0
+    start_url: "https://www.amazon.com"
+    task_type: shop
+    task_prompt_template: |
+      You are a shopping assistant. Search Amazon to find a product matching this description:
+      "{question}"
+      Browse freely. Search, filter, view product pages, and add promising items to your cart.
+      You may remove items from your cart if you find better alternatives.
+      When done, your cart should contain only the product(s) that best match the description.
+      Do NOT proceed to checkout or log in.
+```
+
+`{question}` in the template is interpolated with the episode's question at runtime.
+
 ### Dataset splits
 
 Each split is a separate entry with its own `name` — this keeps train/val/test traces in separate directories without any extra code:
@@ -209,27 +277,97 @@ datasets:
     seed: 42
 ```
 
-`trace_analyzer.py` recurses the whole `traces/` tree, so all splits are pooled for classifier training automatically. If you want to evaluate on one split only, filter by path.
+`trace_analyzer.py` assigns traces to train/val/test/OOD buckets based on the dataset name suffix (`_train`, `_val`, `_test`, `_ood`).
+
+### Non-overlapping WebShop splits
+
+WebShop uses a single shuffled pool. The `offset` field ensures no question appears in two splits:
+
+```yaml
+# seed=42 shuffles once; offset slices into non-overlapping windows
+- name: webshop_train   # offset=0,   n=150 → items 0–149
+- name: webshop_val     # offset=150, n=75  → items 150–224
+- name: webshop_test    # offset=225, n=75  → items 225–299
+```
+
+## Training classifiers
+
+```bash
+# Train on Wikipedia traces only
+python trace_analyzer.py --datasets 2wikimultihop --tag wiki
+
+# Train on Wikipedia; evaluate Amazon as OOD
+python trace_analyzer.py \
+    --datasets 2wikimultihop webshop \
+    --ood-datasets webshop \
+    --tag wiki_ood_amazon
+
+# Train on Amazon; evaluate DeepShop as OOD
+python trace_analyzer.py \
+    --datasets webshop deepshop \
+    --ood-datasets deepshop \
+    --tag webshop
+```
+
+### CLI reference
+
+| Argument | Description |
+|---|---|
+| `--traces-dir PATH` | Root traces directory (default: `./traces`) |
+| `--datasets NAME [NAME …]` | Dataset base names to include (all suffixes: `_train/_val/_test/_ood`) |
+| `--ood-datasets NAME [NAME …]` | Force these base names into the OOD bucket regardless of suffix |
+| `--tag TAG` | Output subdirectory name under `traces/models/`; auto-derived from train datasets if omitted |
+
+`--datasets` without `--ood-datasets`: suffix-based split assignment (`_train` → train, `_val` → val, `_test` → test, `_ood` → OOD).
+
+`--ood-datasets webshop`: all webshop traces go to OOD regardless of whether they're named `_train/_val/_test`.
+
+### Train/val/test/OOD workflow
+
+| Split bucket | Used for |
+|---|---|
+| `_train` | Fitting RF, GB, LSTM |
+| `_val` | Early stopping (LSTM), hyperparameter selection |
+| `_test` | Final held-out in-domain evaluation |
+| OOD | Cross-domain evaluation — never seen during training |
+
+Results are saved to `traces/models/{tag}/results.json` and include `test_report` and `ood_report` for each model.
+
+## Generating LaTeX tables
+
+```bash
+python make_tables.py                    # reads ./traces/models/
+python make_tables.py /path/to/traces    # custom traces dir
+```
+
+Reads `wiki_ood_amazon/results.json` and `webshop/results.json` and writes:
+- `traces/models/table_main.tex` — accuracy + macro F1 across all four conditions
+- `traces/models/table_per_class.tex` — per-agent F1 breakdown by model and condition
 
 ## Trace directory layout
 
 ```
 traces/
 ├── qwen3vl_8b/
-│   ├── custom/
+│   ├── 2wikimultihop_train/
 │   │   └── 20260404_090000/
 │   │       ├── qwen3vl_a1b2c3d4.json
 │   │       └── ...
-│   └── 2wikimultihop_val/
-│       └── 20260404_093000/
-│           ├── qwen3vl_f1a2b3c4.json
-│           └── ...
-├── gpt54/
-│   └── 2wikimultihop_val/
+│   ├── 2wikimultihop_val/
+│   │   └── ...
+│   └── webshop_train/
 │       └── ...
+├── gpt54/
+│   └── ...
 └── models/
-    ├── classifier.pkl
-    └── lstm_model.pt
+    ├── wiki_ood_amazon/
+    │   ├── classifier.pkl     (RF + GB + LabelEncoder + feature names + StandardScaler)
+    │   ├── lstm_model.pt
+    │   └── results.json
+    └── webshop/
+        ├── classifier.pkl
+        ├── lstm_model.pt
+        └── results.json
 ```
 
 ## Setup
@@ -268,7 +406,10 @@ python orchestrator.py --config custom_config.yaml --dry-run
 python orchestrator.py --config custom_config.yaml
 
 # 4. Train classifiers once enough traces exist (15+ recommended)
-python trace_analyzer.py
+python trace_analyzer.py --datasets 2wikimultihop --tag wiki
+
+# 5. Generate LaTeX tables
+python make_tables.py
 ```
 
 ## Adding a new agent
@@ -326,7 +467,7 @@ Set in `config.yaml` (`midscene_defaults:`) or override per-agent in your experi
 
 | Setting | Effect |
 |---|---|
-| `MIDSCENE_REPLANNING_CYCLE_LIMIT` | Max planning cycles before giving up. Default - 40 |
+| `MIDSCENE_REPLANNING_CYCLE_LIMIT` | Max planning cycles before giving up. Default: 40 |
 
 ## File layout
 
@@ -340,14 +481,17 @@ src/
 ├── page_tracer.js          IIFE injected into every page; records DOM events
 ├── agent_runner.ts         One agent episode end-to-end (TypeScript)
 ├── orchestrator.py         Drives all episodes via subprocess
-├── prep_datasets.py        Download + standardize HuggingFace datasets
+├── prep_datasets.py        Download + standardize HuggingFace/local datasets
 ├── qa_dataset.py           10 built-in curated multi-hop questions
-├── trace_analyzer.py       Feature extraction + Random Forest + LSTM
+├── trace_analyzer.py       Feature extraction + RF + Gradient Boosting + LSTM
+├── make_tables.py          Generate NeurIPS-ready LaTeX tables from results.json
 ├── serve_vllm.sh           Launch Qwen3-VL-8B on port 3030
 ├── requirements.txt        Python deps
+├── web_shop_goals.json     ~12k WebShop shopping goals (local copy)
 ├── .env                    API keys (never committed)
 ├── datasets/               Prepared question files (generated by prep_datasets.py)
 │   ├── 2wikimultihop_val.json
+│   ├── webshop_train.json
 │   └── ...
 └── traces/
     ├── {agent_id}/
@@ -355,21 +499,9 @@ src/
     │       └── {YYYYMMDD_HHMMSS}/
     │           └── {episode_id}.json
     └── models/
-        ├── classifier.pkl
-        └── lstm_model.pt
+        └── {tag}/
+            ├── classifier.pkl   (RF, GB, LabelEncoder, feature names, StandardScaler)
+            ├── lstm_model.pt
+            └── results.json
 ```
-## Results
 
-Classifier performance evaluated on three LLM agents using behavioral features alone, without access to question text or page content.
-
-**Dataset:** 444 train episodes, 223 validation episodes, 219 test episodes  
-**Agents:** gpt54, qwen3vl_8b, uitars_7b
-
-| Model | Type | Test Accuracy | Test F1-Weighted |
-|---|---|---|---|
-| Random Forest | Tree ensemble | **0.968** | 0.968 |
-| Gradient Boosting | Boosted trees | 0.963 | 0.964 |
-| LSTM | Sequence model | 0.922 | 0.923 |
-
-**Top 5 Random Forest Features:** `std_iei_ms` (0.177), `p10_iei_ms` (0.099), `click_y_std` (0.092), `mean_iei_ms` (0.091), `p90_iei_ms` (0.082)
-```
