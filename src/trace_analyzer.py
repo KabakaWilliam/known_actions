@@ -169,6 +169,7 @@ def extract_sequence(episode) -> list[tuple[int, float, float, float, float]]:
 def load_dataset(trace_dir: Path,
                  train_datasets: list[str] | None = None,
                  ood_datasets: list[str] | None = None,
+                 agents: list[str] | None = None,
                  ) -> tuple[dict[str, tuple], dict[str, set]]:
     """Load all episode traces, bucketed by split.
 
@@ -200,6 +201,9 @@ def load_dataset(trace_dir: Path,
             continue  # skip results.json / classifier artefacts (models/, models_v1/, etc.)
         if len(rel_parts) < 2:
             warnings.warn(f"Skipping {path}: unexpected path depth")
+            continue
+        agent_id = rel_parts[0]
+        if agents is not None and agent_id not in agents:
             continue
         dataset_name = rel_parts[1]
         base = dataset_name.rsplit("_", 1)[0]
@@ -420,9 +424,10 @@ GB_PARAM_GRID = {
 
 def train(trace_dir: Path, tag: str | None = None,
           train_datasets: list[str] | None = None,
-          ood_datasets: list[str] | None = None) -> None:
+          ood_datasets: list[str] | None = None,
+          agents: list[str] | None = None) -> None:
     splits, ds_names = load_dataset(trace_dir, train_datasets=train_datasets,
-                                    ood_datasets=ood_datasets)
+                                    ood_datasets=ood_datasets, agents=agents)
     feat_train, seq_train, lbl_train = splits["train"]
     feat_val,   seq_val,   lbl_val   = splits["val"]
     feat_test,  seq_test,  lbl_test  = splits["test"]
@@ -651,6 +656,7 @@ if __name__ == "__main__":
             "  python trace_analyzer.py --train-datasets webshop --ood-datasets deepshop\n"
             "  python trace_analyzer.py --train-datasets 2wikimultihop --ood-datasets webshop --tag wiki_ood_amazon\n"
             "  python trace_analyzer.py --train-datasets webshop --ood-datasets 2wikimultihop --tag amazon_ood_wiki\n"
+            "  python trace_analyzer.py --train-datasets 2wikimultihop --agents gpt54 qwen3vl_8b --tag wiki_no_uitars\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -666,6 +672,10 @@ if __name__ == "__main__":
                         metavar="NAME",
                         help="Base dataset names to load as OOD (all suffixes → OOD bucket), "
                              "e.g. --ood-datasets webshop")
+    parser.add_argument("--agents", nargs="+", default=None,
+                        metavar="AGENT_ID",
+                        help="Agent IDs to include (e.g. --agents gpt54 qwen3vl_8b). "
+                             "Default: all agents found in traces-dir.")
     cli = parser.parse_args()
     train(cli.traces_dir, tag=cli.tag, train_datasets=cli.train_datasets,
-          ood_datasets=cli.ood_datasets)
+          ood_datasets=cli.ood_datasets, agents=cli.agents)

@@ -10,3 +10,4 @@ src/agent.sif
 src/__pycache__
 **__pycache__**
 *.env
+src/.env

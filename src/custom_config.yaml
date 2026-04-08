@@ -28,7 +28,10 @@ agents:
   # - agent_id: gpt54
   #   env:                          
   #       MIDSCENE_REPLANNING_CYCLE_LIMIT: "30"
-  - agent_id: qwen3vl_30b_a3b
+  # - agent_id: glm_4.6v_flash
+  - agent_id: claude_opus_4_6
+  # - agent_id: gemini_3_1
+  # - agent_id: qwen3vl_30b_a3b
   # - agent_id: qwen25vl_7b
   # - agent_id: qwen35_7b
   # - agent_id: uitars_7b
@@ -60,7 +63,7 @@ datasets:
     n_questions: 75
     seed: 42
 
-  # --- Additional splits (uncomment + run prep_datasets.py to activate) ---
+  # # --- Additional splits (uncomment + run prep_datasets.py to activate) ---
 
   - name: 2wikimultihop_train
     source: datasets/2wikimultihop_train.json

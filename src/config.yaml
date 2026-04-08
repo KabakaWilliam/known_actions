@@ -24,6 +24,14 @@ agents:
 
   # --- Local vLLM models (start server before running) ---
 
+  - agent_id: glm_4.6v_flash
+    env:
+      MIDSCENE_MODEL_NAME:              "glm-4.6v"
+      MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"
+      MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3031/v1"
+      MIDSCENE_MODEL_FAMILY:            "glm-v"
+      MIDSCENE_REPLANNING_CYCLE_LIMIT:  "40"
+
   - agent_id: qwen3vl_30b_a3b
     env:
       MIDSCENE_MODEL_NAME:              "Qwen/Qwen3-VL-30B-A3B-Instruct"
@@ -80,9 +88,23 @@ agents:
       MIDSCENE_MODEL_BASE_URL: "https://api.anthropic.com/v1"
       # MIDSCENE_MODEL_FAMILY omitted — Claude uses generic OpenAI-SDK-compat mode
 
-  - agent_id: gemini_flash
+  - agent_id: claude_opus_4_6
     env:
-      MIDSCENE_MODEL_NAME:     "gemini-2.5-flash"
+      MIDSCENE_MODEL_NAME:     "claude-opus-4-6"
+      MIDSCENE_MODEL_API_KEY:  "$ANTHROPIC_API_KEY"
+      MIDSCENE_MODEL_BASE_URL: "https://api.anthropic.com/v1"
+      # MIDSCENE_MODEL_FAMILY omitted — Claude uses generic OpenAI-SDK-compat mode
+
+  - agent_id: gemini_3_1
+    env:
+      MIDSCENE_MODEL_NAME:     "gemini-3.1-pro-preview"
+      MIDSCENE_MODEL_API_KEY:  "$GOOGLE_API_KEY"
+      MIDSCENE_MODEL_BASE_URL: "https://generativelanguage.googleapis.com/v1beta/openai"
+      MIDSCENE_MODEL_FAMILY:   "gemini"
+
+  - agent_id: gemini_3_flash
+    env:
+      MIDSCENE_MODEL_NAME:     "gemini-3-flash"
       MIDSCENE_MODEL_API_KEY:  "$GOOGLE_API_KEY"
       MIDSCENE_MODEL_BASE_URL: "https://generativelanguage.googleapis.com/v1beta/openai"
       MIDSCENE_MODEL_FAMILY:   "gemini"
