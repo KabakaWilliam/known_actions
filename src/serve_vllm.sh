@@ -36,3 +36,12 @@ CUDA_VISIBLE_DEVICES=2 vllm serve zai-org/GLM-4.6V-Flash \
 
 # fix for vllm for glm issue: try using with vLLM 0.18.0 and transformers>=5.3.0 https://huggingface.co/zai-org/GLM-4.6V-Flash/discussions/8
 
+
+
+# Planned models:
+# Qwen/Qwen3.5-27B
+# google/gemma-4-26B-A4B-it
+
+
+# claude-haiku-4-5-20251001
+# gpt-5.4-mini

@@ -11,3 +11,5 @@ src/__pycache__
 **__pycache__**
 *.env
 src/.env
+*qwen3vl_30b_a3b
+*qwen3vl_8b

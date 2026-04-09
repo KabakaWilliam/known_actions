@@ -3,10 +3,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.preprocessing import LabelEncoder, StandardScaler
+try:
+    from xgboost import XGBClassifier
+    _XGBOOST_AVAILABLE = True
+except ImportError:
+    _XGBOOST_AVAILABLE = False
 import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
@@ -35,6 +41,13 @@ def _infer_split(dataset_name: str) -> str | None:
     return None
 
 
+def _type_ieis(events, event_type) -> list[float]:
+    """Inter-event intervals for a single event type, in ms."""
+    ts = [e.get("t_episode") or e.get("t") or 0
+          for e in events if e["type"] == event_type]
+    return np.diff(ts).tolist() if len(ts) > 1 else [0.0]
+
+
 def extract_features(episode) -> dict:
     dom    = episode.get("dom_trace", {})
     events = dom.get("events", [])
@@ -52,15 +65,38 @@ def extract_features(episode) -> dict:
     ts   = [e.get("t_episode") or e.get("t") or 0 for e in events]
     ieis = np.diff(ts).tolist() if len(ts) > 1 else [0]
 
-    # Timing
+    # ── Global timing ─────────────────────────────────────────────────────────
     total_duration_s = (ts[-1] - ts[0]) / 1000 if len(ts) >= 2 else 0
+    t_first_action_ms = float(ts[0]) if ts else 0.0
     mean_iei_ms      = float(np.mean(ieis))
     std_iei_ms       = float(np.std(ieis))
     median_iei_ms    = float(np.median(ieis))
     p10_iei_ms       = float(np.percentile(ieis, 10))
     p90_iei_ms       = float(np.percentile(ieis, 90))
 
-    # Scroll
+    # IEI trend: does the agent slow down as context fills?
+    # ratio > 1 means second half is slower than first (larger model slow-down)
+    if len(ieis) >= 4:
+        mid = len(ieis) // 2
+        iei_trend = float(np.mean(ieis[mid:])) / max(float(np.mean(ieis[:mid])), 1.0)
+    else:
+        iei_trend = 1.0
+
+    # ── Per-type IEIs (planning latency per action type) ──────────────────────
+    click_ieis = _type_ieis(events, "click")
+    mean_click_iei_ms = float(np.mean(click_ieis))
+    std_click_iei_ms  = float(np.std(click_ieis))
+
+    nav_ieis = _type_ieis(events, "navigate")
+    mean_nav_iei_ms = float(np.mean(nav_ieis))   # ≈ page dwell time
+    std_nav_iei_ms  = float(np.std(nav_ieis))
+    max_page_dwell_ms = float(np.max(nav_ieis)) if len(nav_ieis) > 1 else 0.0
+
+    key_ieis = _type_ieis(events, "keydown")
+    mean_key_iei_ms = float(np.mean(key_ieis))   # ≈ API keystroke latency
+    std_key_iei_ms  = float(np.std(key_ieis))
+
+    # ── Scroll ────────────────────────────────────────────────────────────────
     max_scroll_pct  = max((e.get("pct") or 0 for e in scrolls), default=0)
     mean_scroll_pct = float(np.mean([e.get("pct") or 0 for e in scrolls])) if scrolls else 0.0
     n_deep_scrolls  = sum(1 for e in scrolls if (e.get("pct") or 0) > 60)
@@ -69,16 +105,27 @@ def extract_features(episode) -> dict:
     diffs = np.diff(pcts)
     scroll_reversals = int(np.sum((diffs[:-1] * diffs[1:]) < 0)) if len(diffs) > 1 else 0
 
-    # Clicks
+    # ── Clicks ────────────────────────────────────────────────────────────────
     click_xs = [e.get("x") or 0 for e in clicks]
     click_ys = [e.get("y") or 0 for e in clicks]
     click_x_std = float(np.std(click_xs)) if click_xs else 0.0
     click_y_std = float(np.std(click_ys)) if click_ys else 0.0
 
+    # Bounding-box coverage of click positions as fraction of viewport
+    if len(click_xs) >= 2:
+        click_bbox_area_frac = (
+            (max(click_xs) - min(click_xs)) * (max(click_ys) - min(click_ys))
+        ) / (1280.0 * 768.0)
+    else:
+        click_bbox_area_frac = 0.0
+
+    # Fraction of clicks in the top quarter of the viewport (navbar / search bar area)
+    click_top_frac = sum(1 for y in click_ys if y < 192) / max(len(click_ys), 1)
+
     n_link_clicks    = sum(1 for e in clicks if e.get("href"))
     link_click_ratio = n_link_clicks / max(len(clicks), 1)
 
-    # Navigation / volume
+    # ── Navigation ────────────────────────────────────────────────────────────
     n_clicks           = len(clicks)
     n_scrolls          = len(scrolls)
     n_navigations      = len(navs)
@@ -86,82 +133,134 @@ def extract_features(episode) -> dict:
     n_beforeunload     = len(beforeunload)
     n_focus            = len(focuses)
     n_events_total     = len(events)
-    n_midscene_actions = len(mlog)
+
+    # Backtracking: popstate navigations vs. total (history.back() pattern)
+    n_popstate    = sum(1 for e in navs if e.get("trigger") == "popstate")
+    popstate_ratio = n_popstate / max(n_navigations, 1)
 
     actions_per_page    = n_events_total / max(page_count, 1)
     nav_to_click_ratio  = n_navigations / max(n_clicks, 1)
     keydowns_per_page   = n_keydowns / max(page_count, 1)
-    midscene_per_page   = n_midscene_actions / max(page_count, 1)
     focus_per_page      = n_focus / max(page_count, 1)
 
-    # Scroll depth at beforeunload — how deep was the agent when it left each page
+    # Structural keys (Enter, Arrow*, Tab, Escape) vs. printable char keys
+    _structural = {"Enter", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+                   "Tab", "Escape", "Backspace", "Delete"}
+    n_structural_keys    = sum(1 for e in keydowns if e.get("key") in _structural)
+    structural_key_ratio = n_structural_keys / max(n_keydowns, 1)
+
+    # Unique domains visited (subdomains count as same if same eTLD+1 is impractical,
+    # so we use full hostname — simple and consistent across agents)
+    from urllib.parse import urlparse
+    nav_urls = [e.get("url") or "" for e in navs]
+    n_unique_domains = len({urlparse(u).netloc for u in nav_urls if u})
+
+    # Scroll-to-click ratio
+    scroll_to_click_ratio = n_scrolls / max(n_clicks, 1)
+
+    # ── Exit scroll depth ─────────────────────────────────────────────────────
     bu_pcts = [e.get("pct") or 0 for e in beforeunload]
     mean_exit_scroll_pct = float(np.mean(bu_pcts)) if bu_pcts else 0.0
 
     return {
         # Volume
-        "n_clicks":             n_clicks,
-        "n_scrolls":            n_scrolls,
-        "n_navigations":        n_navigations,
-        "n_keydowns":           n_keydowns,
-        "n_beforeunload":       n_beforeunload,
-        "n_focus":              n_focus,
-        "n_events_total":       n_events_total,
-        "n_midscene_actions":   n_midscene_actions,
-        "page_count":           page_count,
-        # Timing
-        "total_duration_s":     total_duration_s,
-        "mean_iei_ms":          mean_iei_ms,
-        "std_iei_ms":           std_iei_ms,
-        "median_iei_ms":        median_iei_ms,
-        "p10_iei_ms":           p10_iei_ms,
-        "p90_iei_ms":           p90_iei_ms,
+        "n_clicks":              n_clicks,
+        "n_scrolls":             n_scrolls,
+        "n_navigations":         n_navigations,
+        "n_keydowns":            n_keydowns,
+        "n_focus":               n_focus,
+        "n_events_total":        n_events_total,
+        "page_count":            page_count,
+        "n_unique_domains":      n_unique_domains,
+        # Global timing
+        "total_duration_s":      total_duration_s,
+        "t_first_action_ms":     t_first_action_ms,
+        "mean_iei_ms":           mean_iei_ms,
+        "std_iei_ms":            std_iei_ms,
+        "median_iei_ms":         median_iei_ms,
+        "p10_iei_ms":            p10_iei_ms,
+        "p90_iei_ms":            p90_iei_ms,
+        "iei_trend":             iei_trend,
+        # Per-type IEIs (planning latency by action type)
+        "mean_click_iei_ms":     mean_click_iei_ms,
+        "std_click_iei_ms":      std_click_iei_ms,
+        "mean_nav_iei_ms":       mean_nav_iei_ms,
+        "std_nav_iei_ms":        std_nav_iei_ms,
+        "max_page_dwell_ms":     max_page_dwell_ms,
+        "mean_key_iei_ms":       mean_key_iei_ms,
+        "std_key_iei_ms":        std_key_iei_ms,
         # Scroll
-        "max_scroll_pct":       max_scroll_pct,
-        "mean_scroll_pct":      mean_scroll_pct,
-        "n_deep_scrolls":       n_deep_scrolls,
-        "scroll_reversals":     scroll_reversals,
+        "max_scroll_pct":        max_scroll_pct,
+        "mean_scroll_pct":       mean_scroll_pct,
+        "n_deep_scrolls":        n_deep_scrolls,
+        "scroll_reversals":      scroll_reversals,
         # Clicks
-        "click_x_std":          click_x_std,
-        "click_y_std":          click_y_std,
-        "n_link_clicks":        n_link_clicks,
-        "link_click_ratio":     link_click_ratio,
-        # Navigation
-        "actions_per_page":       actions_per_page,
-        "nav_to_click_ratio":     nav_to_click_ratio,
-        "keydowns_per_page":      keydowns_per_page,
-        "midscene_per_page":      midscene_per_page,
-        "focus_per_page":         focus_per_page,
-        "mean_exit_scroll_pct":   mean_exit_scroll_pct,
+        "click_x_std":           click_x_std,
+        "click_y_std":           click_y_std,
+        "click_bbox_area_frac":  click_bbox_area_frac,
+        "click_top_frac":        click_top_frac,
+        "n_link_clicks":         n_link_clicks,
+        "link_click_ratio":      link_click_ratio,
+        # Navigation strategy
+        "popstate_ratio":        popstate_ratio,
+        "scroll_to_click_ratio": scroll_to_click_ratio,
+        "actions_per_page":      actions_per_page,
+        "nav_to_click_ratio":    nav_to_click_ratio,
+        "keydowns_per_page":     keydowns_per_page,
+        "focus_per_page":        focus_per_page,
+        "structural_key_ratio":  structural_key_ratio,
+        # Exit
+        "mean_exit_scroll_pct":  mean_exit_scroll_pct,
     }
 
 
-def extract_sequence(episode) -> list[tuple[int, float, float, float, float]]:
-    """Return a list of (token_id, f0, f1, f2, f3) per event.
+def extract_sequence(episode) -> list[tuple[int, float, float, float, float, float]]:
+    """Return a list of (token_id, f0, f1, f2, f3, f4) per event.
 
-    f0 = log1p(delta_t_ms)   — inter-event gap
-    f1 = log1p(t_episode_ms) — absolute position in session
+    f0 = log1p(delta_t_ms)        — inter-event gap
+    f1 = log1p(t_episode_ms)      — absolute position in session
     f2, f3 = event-specific spatial/depth scalars:
         scroll → (pct/100, 0)
         click  → (x/1280, y/768)
         other  → (0, 0)
+    f4 = log1p(running_mean_iei_ms for this event type)
+        — per-type planning latency signal; lets LSTM learn type-specific timing
+          without having to implicitly isolate event types from the mixed sequence
     """
     events = episode.get("dom_trace", {}).get("events", [])
-    result = []
-    prev_t = None
+    result  = []
+    prev_t  = None
+    # Running per-type IEI accumulators: {type: (sum_ieis, count)}
+    type_prev_t: dict[str, float] = {}
+    type_iei_sum: dict[str, float] = {}
+    type_iei_cnt: dict[str, int]   = {}
+
     for e in events:
-        token = EVENT_VOCAB.get(e["type"], EVENT_VOCAB["<unk>"])
+        etype = e["type"]
+        token = EVENT_VOCAB.get(etype, EVENT_VOCAB["<unk>"])
         t     = e.get("t_episode") or e.get("t") or 0
         delta = (t - prev_t) if prev_t is not None else 0.0
         f0    = float(np.log1p(max(delta, 0)))
         f1    = float(np.log1p(max(t, 0)))
-        if e["type"] == "scroll":
+        if etype == "scroll":
             f2, f3 = (e.get("pct") or 0) / 100.0, 0.0
-        elif e["type"] == "click":
+        elif etype == "click":
             f2, f3 = (e.get("x") or 0) / 1280.0, (e.get("y") or 0) / 768.0
         else:
             f2, f3 = 0.0, 0.0
-        result.append((token, f0, f1, f2, f3))
+
+        # Per-type running mean IEI
+        if etype in type_prev_t:
+            type_iei = t - type_prev_t[etype]
+            type_iei_sum[etype] = type_iei_sum.get(etype, 0.0) + type_iei
+            type_iei_cnt[etype] = type_iei_cnt.get(etype, 0) + 1
+            running_mean = type_iei_sum[etype] / type_iei_cnt[etype]
+        else:
+            running_mean = 0.0
+        type_prev_t[etype] = t
+        f4 = float(np.log1p(max(running_mean, 0)))
+
+        result.append((token, f0, f1, f2, f3, f4))
         prev_t = t
     return result
 
@@ -185,14 +284,15 @@ def load_dataset(trace_dir: Path,
     If both are None: legacy mode — all datasets, split by suffix.
 
     Returns (splits, ds_names) where:
-      splits   = {"train": (features, sequences, labels), "val": ..., ...}
+      splits   = {"train": (features, sequences, labels, ds_bases), "val": ..., ...}
+        ds_bases is a list of base dataset names (one per episode), used for per-OOD-dataset eval
       ds_names = {"train": {"2wikimultihop_train", ...}, "val": ..., ...}
     """
-    buckets: dict[str, tuple[list, list, list]] = {
-        "train": ([], [], []),
-        "val":   ([], [], []),
-        "test":  ([], [], []),
-        "ood":   ([], [], []),
+    buckets: dict[str, tuple[list, list, list, list]] = {
+        "train": ([], [], [], []),
+        "val":   ([], [], [], []),
+        "test":  ([], [], [], []),
+        "ood":   ([], [], [], []),
     }
     ds_names: dict[str, set] = {"train": set(), "val": set(), "test": set(), "ood": set()}
     for path in sorted(trace_dir.rglob("*.json")):
@@ -229,6 +329,7 @@ def load_dataset(trace_dir: Path,
             buckets[split][0].append(extract_features(episode))
             buckets[split][1].append(extract_sequence(episode))
             buckets[split][2].append(episode["meta"]["agent_id"])
+            buckets[split][3].append(base)
             ds_names[split].add(dataset_name)
         except Exception as e:
             warnings.warn(f"Skipping {path.name}: {e}")
@@ -262,7 +363,7 @@ def collate_fn(batch):
     return padded_toks, padded_times, lengths, rf_batch, torch.stack(lbls)
 
 
-_N_CONTINUOUS = 4   # number of continuous scalars per event (f0..f3)
+_N_CONTINUOUS = 5   # number of continuous scalars per event (f0..f4)
 
 
 class AgentLSTM(nn.Module):
@@ -304,13 +405,17 @@ _LSTM_GRID = [
     {"hidden_dim": 64,  "dropout": 0.4},
     {"hidden_dim": 128, "dropout": 0.2},
     {"hidden_dim": 128, "dropout": 0.4},
+    {"hidden_dim": 256, "dropout": 0.2},
+    {"hidden_dim": 256, "dropout": 0.4},
+    {"hidden_dim": 512, "dropout": 0.2},
+    {"hidden_dim": 512, "dropout": 0.4},
 ]
 
 
 def _make_tensors(sequences):
-    """Unpack list of (token, f0, f1, f2, f3) tuples into tok and time tensors."""
+    """Unpack list of (token, f0..f4) tuples into tok and time tensors."""
     tok_tensors  = [torch.tensor([e[0] for e in s], dtype=torch.long) for s in sequences]
-    time_tensors = [torch.tensor([[e[1], e[2], e[3], e[4]] for e in s], dtype=torch.float)
+    time_tensors = [torch.tensor([[e[1], e[2], e[3], e[4], e[5]] for e in s], dtype=torch.float)
                     for s in sequences]
     return tok_tensors, time_tensors
 
@@ -411,14 +516,22 @@ def train_lstm(seq_train, X_train, y_train,
 
 
 RF_PARAM_GRID = {
-    "n_estimators":      [100, 200, 300],
-    "max_depth":         [None, 10, 20],
+    "n_estimators":      [200, 400],
+    "max_depth":         [None, 15, 30],
+    "max_features":      ["sqrt", "log2", 0.4],
     "min_samples_split": [2, 5],
 }
-GB_PARAM_GRID = {
-    "n_estimators":  [100, 200],
-    "learning_rate": [0.05, 0.1, 0.2],
-    "max_depth":     [3, 5],
+XGB_PARAM_DIST = {
+    "n_estimators":     [100, 200, 300, 400, 500],
+    "learning_rate":    [0.01, 0.05, 0.1, 0.2, 0.3],
+    "max_depth":        [3, 4, 5, 6, 7, 8],
+    "subsample":        [0.6, 0.7, 0.8, 0.9, 1.0],
+    "colsample_bytree": [0.5, 0.6, 0.7, 0.8, 1.0],
+    "reg_alpha":        [0, 0.01, 0.1, 1.0],
+    "reg_lambda":       [0.5, 1.0, 2.0, 5.0],
+}
+LR_PARAM_GRID = {
+    "C": [0.01, 0.1, 1.0, 10.0],
 }
 
 
@@ -428,10 +541,10 @@ def train(trace_dir: Path, tag: str | None = None,
           agents: list[str] | None = None) -> None:
     splits, ds_names = load_dataset(trace_dir, train_datasets=train_datasets,
                                     ood_datasets=ood_datasets, agents=agents)
-    feat_train, seq_train, lbl_train = splits["train"]
-    feat_val,   seq_val,   lbl_val   = splits["val"]
-    feat_test,  seq_test,  lbl_test  = splits["test"]
-    feat_ood,   seq_ood,   lbl_ood   = splits["ood"]
+    feat_train, seq_train, lbl_train, _           = splits["train"]
+    feat_val,   seq_val,   lbl_val,   _           = splits["val"]
+    feat_test,  seq_test,  lbl_test,  _           = splits["test"]
+    feat_ood,   seq_ood,   lbl_ood,   ds_bases_ood = splits["ood"]
 
     # --- guards ---
     if not feat_train:
@@ -465,6 +578,10 @@ def train(trace_dir: Path, tag: str | None = None,
     X_test  = to_X(feat_test)
     X_ood   = to_X(feat_ood)
 
+    # Unique OOD dataset base names in order — used for per-dataset OOD evaluation
+    ood_base_names = sorted(set(ds_bases_ood)) if ds_bases_ood else []
+    ds_bases_ood_arr = np.array(ds_bases_ood)  # for numpy boolean indexing
+
     # Scaled copies for the LSTM head — RF/GB are scale-invariant so they use raw X
     scaler    = StandardScaler().fit(X_train)
     Xs_train  = scaler.transform(X_train)
@@ -479,58 +596,89 @@ def train(trace_dir: Path, tag: str | None = None,
     models_dir = trace_dir / "models" / tag
     models_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- RF / GradientBoosting ---
-    clf_results = {}
-    best_rf     = None
-    best_gb     = None
+    # --- Sklearn classifiers ---
+    clf_results  = {}
+    best_rf      = None
+    best_xgb     = None
+    best_lr_l2   = None
 
-    for name, Clf, param_grid, defaults in [
+    # (name, estimator, param_dist, uses_scaled_features, use_random_search)
+    # RF: exhaustive grid — small grid, parallelises well with n_jobs=-1
+    # XGBoost: randomised — large search space, GPU-accelerated per fit
+    # LR: exhaustive — only 4 C values
+    _clf_specs = [
         ("RandomForest",
-         RandomForestClassifier,
-         RF_PARAM_GRID,
-         {"n_estimators": 200, "random_state": 42}),
-        ("GradientBoosting",
-         GradientBoostingClassifier,
-         GB_PARAM_GRID,
-         {"n_estimators": 100, "random_state": 42}),
-    ]:
+         RandomForestClassifier(n_estimators=200, random_state=42),
+         RF_PARAM_GRID, False, False),
+        # LR variants use StandardScaler-normalized features
+        # sklearn 1.8+: penalty deprecated; use l1_ratio (0=L2, 1=L1)
+        ("LR_L2",
+         LogisticRegression(solver="lbfgs", l1_ratio=0.0, max_iter=5000, random_state=42),
+         LR_PARAM_GRID, True, False),
+        ("LR_Lasso",
+         LogisticRegression(solver="saga",  l1_ratio=1.0, max_iter=5000, random_state=42),
+         LR_PARAM_GRID, True, False),
+    ]
+    if _XGBOOST_AVAILABLE:
+        _clf_specs.append((
+            "XGBoost",
+            XGBClassifier(tree_method="hist", device="cpu",
+                          eval_metric="mlogloss", random_state=42, verbosity=0),
+            XGB_PARAM_DIST, False, True,   # randomised search
+        ))
+
+    for name, base_estimator, param_dist, scaled, use_random in _clf_specs:
+        Xtr = Xs_train if scaled else X_train
+        Xvl = Xs_val   if scaled else X_val
+        Xte = Xs_test  if scaled else X_test
+        Xod = Xs_ood   if scaled else X_ood
+
         if has_val:
-            gs = GridSearchCV(Clf(random_state=42), param_grid,
-                              cv=3, scoring="accuracy", n_jobs=-1, refit=True)
-            gs.fit(X_train, y_train)
+            if use_random:
+                gs = RandomizedSearchCV(base_estimator, param_dist, n_iter=40,
+                                        cv=3, scoring="accuracy",
+                                        n_jobs=-1, refit=True, random_state=42)
+            else:
+                gs = GridSearchCV(base_estimator, param_dist,
+                                  cv=3, scoring="accuracy", n_jobs=-1, refit=True)
+            gs.fit(Xtr, y_train)
             best_clf    = gs.best_estimator_
             best_params = gs.best_params_
-            val_preds   = best_clf.predict(X_val)
+            val_preds   = best_clf.predict(Xvl)
             val_report  = classification_report(
                 y_val, val_preds, target_names=le.classes_, output_dict=True)
             print(f"{name:20s}  best={best_params}  "
                   f"val_acc={val_report['accuracy']:.3f}")
         else:
-            best_clf = Clf(**defaults).fit(X_train, y_train)
-            best_params, val_report = defaults, None
+            best_clf = base_estimator.fit(Xtr, y_train)
+            best_params, val_report = {}, None
 
         test_report = None
         if has_test:
-            test_preds  = best_clf.predict(X_test)
+            test_preds  = best_clf.predict(Xte)
             test_report = classification_report(
                 y_test, test_preds, target_names=le.classes_, output_dict=True)
             print(f"{name:20s}  test_acc={test_report['accuracy']:.3f}")
 
-        ood_report = None
-        if has_ood:
-            ood_preds  = best_clf.predict(X_ood)
-            ood_report = classification_report(
-                y_ood, ood_preds, target_names=le.classes_, output_dict=True)
-            print(f"{name:20s}  ood_acc={ood_report['accuracy']:.3f}")  # type: ignore[index]
+        ood_reports = {}
+        for oname in ood_base_names:
+            mask = ds_bases_ood_arr == oname
+            X_ood_sub = Xod[mask]
+            y_ood_sub = y_ood[mask]
+            preds = best_clf.predict(X_ood_sub)
+            ood_reports[oname] = classification_report(
+                y_ood_sub, preds, target_names=le.classes_, output_dict=True)
+            print(f"{name:20s}  ood[{oname}]_acc={ood_reports[oname]['accuracy']:.3f}")
 
         clf_results[name] = {
             "best_params": best_params,
             "val_report":  val_report,
             "test_report": test_report,
-            "ood_report":  ood_report,
+            "ood_reports": ood_reports,
         }
-        if name == "RandomForest":    best_rf = best_clf
-        if name == "GradientBoosting": best_gb = best_clf
+        if name == "RandomForest": best_rf    = best_clf
+        if name == "XGBoost":      best_xgb   = best_clf
+        if name == "LR_L2":        best_lr_l2 = best_clf
 
     importances = sorted(zip(feat_names, best_rf.feature_importances_), key=lambda x: -x[1])
     print("\nTop 10 features (Random Forest):")
@@ -539,6 +687,15 @@ def train(trace_dir: Path, tag: str | None = None,
     clf_results["RandomForest"]["feature_importances"] = {
         fname: float(imp) for fname, imp in importances
     }
+
+    if best_lr_l2 is not None and hasattr(best_lr_l2, "coef_"):
+        coef_abs = np.abs(best_lr_l2.coef_).mean(axis=0)  # mean abs coef across classes
+        nonzero = [(feat_names[i], float(coef_abs[i])) for i in range(len(feat_names))
+                   if coef_abs[i] > 0]
+        nonzero.sort(key=lambda x: -x[1])
+        print(f"\nLR_L2 top features ({len(nonzero)}/{len(feat_names)} non-zero):")
+        for fname, c in nonzero[:10]:
+            print(f"  {fname:<30} {c:.4f}")
 
     # --- LSTM ---
     def remap(report):
@@ -568,14 +725,20 @@ def train(trace_dir: Path, tag: str | None = None,
         if lstm_result["test_report"]:
             print(f"{'LSTM':20s}  test_acc={lstm_result['test_report']['accuracy']:.3f}")
         # OOD eval reuses the final trained model saved in train_lstm
-        lstm_result["ood_report"] = None
+        lstm_ood_reports = {}
         if has_ood:
             final_model = _fit_lstm(seq_train, Xs_train, list(y_train), n_classes,
                                     lstm_result["best_params"])
-            _, ood_preds      = _eval_lstm(final_model, seq_ood, Xs_ood, list(y_ood))
-            lstm_result["ood_report"] = remap(
-                classification_report(list(y_ood), ood_preds, output_dict=True))
-            print(f"{'LSTM':20s}  ood_acc={lstm_result['ood_report']['accuracy']:.3f}")  # type: ignore[index]
+            for oname in ood_base_names:
+                mask = ds_bases_ood_arr == oname
+                seq_ood_sub = [s for s, m in zip(seq_ood, mask) if m]
+                Xs_ood_sub  = Xs_ood[mask]
+                y_ood_sub   = [l for l, m in zip(list(y_ood), mask) if m]
+                _, ood_preds = _eval_lstm(final_model, seq_ood_sub, Xs_ood_sub, y_ood_sub)
+                lstm_ood_reports[oname] = remap(
+                    classification_report(y_ood_sub, ood_preds, output_dict=True))
+                print(f"{'LSTM':20s}  ood[{oname}]_acc={lstm_ood_reports[oname]['accuracy']:.3f}")
+        lstm_result["ood_reports"] = lstm_ood_reports
     else:
         default_params = {"hidden_dim": 64, "dropout": 0.3}
         model          = _fit_lstm(seq_train, Xs_train, list(y_train), n_classes, default_params)
@@ -583,21 +746,33 @@ def train(trace_dir: Path, tag: str | None = None,
         if has_test:
             _, test_preds = _eval_lstm(model, seq_test, Xs_test, list(y_test))
             test_report   = remap(classification_report(list(y_test), test_preds, output_dict=True))
-        ood_report_lstm = None
+        lstm_ood_reports = {}
         if has_ood:
-            _, ood_preds    = _eval_lstm(model, seq_ood, Xs_ood, list(y_ood))
-            ood_report_lstm = remap(classification_report(list(y_ood), ood_preds, output_dict=True))
-            print(f"{'LSTM':20s}  ood_acc={ood_report_lstm['accuracy']:.3f}")  # type: ignore[index]
+            for oname in ood_base_names:
+                mask = ds_bases_ood_arr == oname
+                seq_ood_sub = [s for s, m in zip(seq_ood, mask) if m]
+                Xs_ood_sub  = Xs_ood[mask]
+                y_ood_sub   = [l for l, m in zip(list(y_ood), mask) if m]
+                _, ood_preds = _eval_lstm(model, seq_ood_sub, Xs_ood_sub, y_ood_sub)
+                lstm_ood_reports[oname] = remap(
+                    classification_report(y_ood_sub, ood_preds, output_dict=True))
+                print(f"{'LSTM':20s}  ood[{oname}]_acc={lstm_ood_reports[oname]['accuracy']:.3f}")
         torch.save(model.state_dict(), models_dir / "lstm_model.pt")
         lstm_result = {"best_params": default_params, "val_report": None,
-                       "test_report": test_report, "ood_report": ood_report_lstm}
+                       "test_report": test_report, "ood_reports": lstm_ood_reports}
 
     clf_results["LSTM"] = lstm_result
 
     # --- save artefacts ---
     with open(models_dir / "classifier.pkl", "wb") as f:
-        pickle.dump({"rf": best_rf, "gb": best_gb, "le": le,
-                     "feat_names": feat_names, "scaler": scaler}, f)
+        pickle.dump({
+            "rf":         best_rf,
+            "xgb":        best_xgb,
+            "lr_l2":      best_lr_l2,
+            "le":         le,
+            "feat_names": feat_names,
+            "scaler":     scaler,
+        }, f)
 
     results = {
         "timestamp":      datetime.now(timezone.utc).isoformat(),
@@ -639,10 +814,11 @@ def train(trace_dir: Path, tag: str | None = None,
             print(f"\n  {'accuracy':>20}  {'':>9}  {'':>9}  {report['accuracy']:>9.3f}  {n:>7d}")
 
     for model_name, res in clf_results.items():
-        for split_name in ("val", "test", "ood"):
-            report = res.get(f"{split_name}_report")
-            if report:
-                _print_report(model_name, split_name, report)
+        report = res.get("test_report")
+        if report:
+            _print_report(model_name, "test", report)
+        for oname, report in (res.get("ood_reports") or {}).items():
+            _print_report(model_name, f"ood[{oname}]", report)
 
 
 if __name__ == "__main__":
@@ -656,7 +832,7 @@ if __name__ == "__main__":
             "  python trace_analyzer.py --train-datasets webshop --ood-datasets deepshop\n"
             "  python trace_analyzer.py --train-datasets 2wikimultihop --ood-datasets webshop --tag wiki_ood_amazon\n"
             "  python trace_analyzer.py --train-datasets webshop --ood-datasets 2wikimultihop --tag amazon_ood_wiki\n"
-            "  python trace_analyzer.py --train-datasets 2wikimultihop --agents gpt54 qwen3vl_8b --tag wiki_no_uitars\n"
+            "  python trace_analyzer.py --train-datasets 2wikimultihop --agents gpt_5_4 qwen3vl_8b --tag wiki_no_uitars\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -674,7 +850,7 @@ if __name__ == "__main__":
                              "e.g. --ood-datasets webshop")
     parser.add_argument("--agents", nargs="+", default=None,
                         metavar="AGENT_ID",
-                        help="Agent IDs to include (e.g. --agents gpt54 qwen3vl_8b). "
+                        help="Agent IDs to include (e.g. --agents gpt_5_4 qwen3vl_8b). "
                              "Default: all agents found in traces-dir.")
     cli = parser.parse_args()
     train(cli.traces_dir, tag=cli.tag, train_datasets=cli.train_datasets,

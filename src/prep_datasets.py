@@ -59,6 +59,40 @@ def _hf_load(hf_repo: str, split: str, n_questions=None, seed=42,
     return rows
 
 
+_WEBGAMES_JSONL = (
+    "https://raw.githubusercontent.com/convergence-ai/webgames"
+    "/main/evals/browseruse_webgames/webgames_tasks.jsonl"
+)
+
+
+def _webgames_load(cfg: dict, n: int | None = None, offset: int = 0) -> list[dict]:
+    """Fetch WebGames task list from GitHub, sort by path for determinism, then slice.
+
+    Split strategy (153 tasks total):
+      train: offset=0,   n=100
+      val:   offset=100, n=25
+      test:  offset=125, n=28
+    """
+    import urllib.request
+    print(f"  Fetching {_WEBGAMES_JSONL} ...")
+    with urllib.request.urlopen(_WEBGAMES_JSONL) as resp:
+        lines = resp.read().decode().strip().splitlines()
+    tasks = sorted(
+        [json.loads(l) for l in lines if l.strip()],
+        key=lambda t: t["path"],
+    )
+    end = (offset + n) if n is not None else None
+    tasks = tasks[offset:end]
+    return [
+        {
+            "question":  t["description"],
+            "answer":    t["password"],
+            "start_url": f"https://webgames.convergence.ai/{t['path']}",
+        }
+        for t in tasks
+    ]
+
+
 def _webshop_load(local_file: str, split: str, n_questions=None, seed=42, offset=0) -> list[dict]:
     """Load a deterministic non-overlapping slice of a local goals JSON file.
 
@@ -83,6 +117,7 @@ LOADERS = {
     "2wikimultihop": _hf_load,
     "webshop_goals": _webshop_load,
     "deepshop":      _hf_load,     # same loader — question_field/answer_field from registry
+    "webgames":      _webgames_load,
 }
 
 
@@ -139,7 +174,12 @@ def main():
         n_questions = dcfg.get("n_questions")
         seed        = dcfg.get("seed", 42)
 
-        if "local_file" in loader_reg:
+        if loader_reg.get("loader") == "webgames":
+            # WebGames: fetch JSONL from GitHub, slice by offset
+            offset = dcfg.get("offset", 0)
+            print(f"\n[{name}]  webgames  offset={offset}  n={n_questions or 'all'}")
+            rows = LOADERS["webgames"](loader_reg, n=n_questions, offset=offset)
+        elif "local_file" in loader_reg:
             # Local file loader (e.g. webshop_goals): uses offset-based slicing
             local_file = loader_reg["local_file"]
             offset     = dcfg.get("offset", 0)

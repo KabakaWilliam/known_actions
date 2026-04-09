@@ -25,9 +25,14 @@ agents:
     # env:                          # uncomment to override for this experiment
     #   MIDSCENE_REPLANNING_CYCLE_LIMIT: "40"
 
-  # - agent_id: gpt54
+  - agent_id: gpt54
   #   env:                          
   #       MIDSCENE_REPLANNING_CYCLE_LIMIT: "30"
+  # - agent_id: claude_haiku_4_6
+  # - agent_id: claude_sonnet_4_6
+  # - agent_id: gemini_3_flash
+  # - agent_id: gpt_5_4_mini
+
   # - agent_id: glm_4.6v_flash
   - agent_id: claude_opus_4_6
   # - agent_id: gemini_3_1
@@ -152,3 +157,32 @@ datasets:
       You may remove items from your cart if you find better alternatives.
       When done, your cart should contain only the product(s) that best match the description.
       Do NOT proceed to checkout or log in.
+
+# =============================================================================
+# WebGames — interactive browser challenges (webgames.convergence.ai)
+# 153 tasks sorted alphabetically by path; split deterministically by offset.
+# Each task has its own start_url; no dataset-level start_url needed.
+# Prep datasets first: python prep_datasets.py --config custom_config.yaml
+# =============================================================================
+
+# datasets:
+  # - name: webgames_train
+  #   source: datasets/webgames_train.json
+  #   hf_dataset: webgames
+  #   n_questions: 100
+  #   offset: 0
+  #   task_type: webgames
+
+  # - name: webgames_val
+  #   source: datasets/webgames_val.json
+  #   hf_dataset: webgames
+  #   n_questions: 25
+  #   offset: 100
+  #   task_type: webgames
+
+  # - name: webgames_test
+  #   source: datasets/webgames_test.json
+  #   hf_dataset: webgames
+  #   n_questions: 25
+  #   offset: 125
+  #   task_type: webgames

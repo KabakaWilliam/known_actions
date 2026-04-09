@@ -13,16 +13,18 @@ let EPISODE_ID           = '';
 let OUTPUT_DIR           = '';
 let START_URL            = 'https://en.wikipedia.org';
 let TASK_PROMPT_OVERRIDE = '';
-let TASK_TYPE            = 'qa';   // 'qa' | 'shop'
+let TASK_TYPE            = 'qa';   // 'qa' | 'shop' | 'webgames'
+let EXPECTED_ANSWER      = '';     // ground-truth answer for verification (optional)
 
 for (let i = 0; i < args.length; i++) {
-  if (args[i] === '--question')     QUESTION             = args[++i];
-  if (args[i] === '--agent_id')     AGENT_ID             = args[++i];
-  if (args[i] === '--episode_id')   EPISODE_ID           = args[++i];
-  if (args[i] === '--output_dir')   OUTPUT_DIR           = args[++i];
-  if (args[i] === '--start_url')    START_URL            = args[++i];
-  if (args[i] === '--task_prompt')  TASK_PROMPT_OVERRIDE = args[++i];
-  if (args[i] === '--task_type')    TASK_TYPE            = args[++i];
+  if (args[i] === '--question')         QUESTION             = args[++i];
+  if (args[i] === '--agent_id')         AGENT_ID             = args[++i];
+  if (args[i] === '--episode_id')       EPISODE_ID           = args[++i];
+  if (args[i] === '--output_dir')       OUTPUT_DIR           = args[++i];
+  if (args[i] === '--start_url')        START_URL            = args[++i];
+  if (args[i] === '--task_prompt')      TASK_PROMPT_OVERRIDE = args[++i];
+  if (args[i] === '--task_type')        TASK_TYPE            = args[++i];
+  if (args[i] === '--expected-answer')  EXPECTED_ANSWER      = args[++i];
 }
 
 if (!QUESTION || !AGENT_ID || !EPISODE_ID || !OUTPUT_DIR) {
@@ -30,13 +32,22 @@ if (!QUESTION || !AGENT_ID || !EPISODE_ID || !OUTPUT_DIR) {
   process.exit(1);
 }
 
-const TASK_PROMPT = TASK_PROMPT_OVERRIDE ||
-  `You are a research agent. Use Wikipedia to answer this question:
+const TASK_PROMPT = TASK_PROMPT_OVERRIDE || (() => {
+  if (TASK_TYPE === 'webgames') {
+    return `Complete the interactive web challenge at ${START_URL}.
+Your task: ${QUESTION}
+
+Interact with the page elements to complete the challenge as described. When you
+successfully complete it, the page will display a secret password. Work to complete
+the challenge and obtain the password.`;
+  }
+  return `You are a research agent. Use Wikipedia to answer this question:
   "${QUESTION}"
 
   Browse freely. Read whatever pages you judge relevant.
   When you have enough information, stop browsing.
   Do not create accounts, submit forms, or leave Wikipedia.`;
+})();
 
 // --- Load page_tracer.js ---
 const __dir = path.dirname(fileURLToPath(import.meta.url));
@@ -137,7 +148,7 @@ try {
 
   await harvest();  // backstop: catch any events that missed the push bridge
 
-  // --- Extract the answer (QA tasks only; skipped for non-QA task types) ---
+  // --- Extract the answer ---
   let result: { answer: string; confidence: 'high' | 'medium' | 'low'; sources: string[] } | null = null;
   if (!aiActError && TASK_TYPE === 'qa') {
     result = await agent.aiQuery<{
@@ -152,7 +163,26 @@ try {
          sources:    string[]   // Wikipedia article titles you consulted
        }`
     );
+  } else if (!aiActError && TASK_TYPE === 'webgames') {
+    const extracted = await agent.aiQuery<{ password: string }>(
+      `Look at the current page. Has a secret password or success code been revealed?
+       Return: { password: string }  // the password text, or empty string if not visible`
+    );
+    result = {
+      answer:     extracted?.password?.trim() ?? '',
+      confidence: extracted?.password ? 'high' : 'low',
+      sources:    [],
+    };
   }
+
+  // --- Verification (webgames + any task with a known expected answer) ---
+  const verification = EXPECTED_ANSWER
+    ? {
+        correct:      (result?.answer ?? '') === EXPECTED_ANSWER,
+        predicted:    result?.answer ?? '',
+        ground_truth: EXPECTED_ANSWER,
+      }
+    : null;
 
   // --- Collect MidScene log ---
   const midsceneLog = (agent as any)._unstableLogContent?.() ?? [];
@@ -182,6 +212,7 @@ try {
       task_type:    TASK_TYPE,
     },
     result,
+    verification,
     error:        aiActError,
     midscene_log: midsceneLog,
     dom_trace:    domTrace,
