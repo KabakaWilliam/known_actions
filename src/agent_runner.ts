@@ -39,7 +39,10 @@ Your task: ${QUESTION}
 
 Interact with the page elements to complete the challenge as described. When you
 successfully complete it, the page will display a secret password. Work to complete
-the challenge and obtain the password.`;
+the challenge and obtain the password.
+
+When you have the password, output it in the following format:
+<password>THE_PASSWORD_HERE</password>`;
   }
   return `You are a research agent. Use Wikipedia to answer this question:
   "${QUESTION}"

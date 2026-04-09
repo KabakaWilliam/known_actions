@@ -25,7 +25,7 @@ agents:
     # env:                          # uncomment to override for this experiment
     #   MIDSCENE_REPLANNING_CYCLE_LIMIT: "40"
 
-  - agent_id: gpt54
+  - agent_id: gpt_5_4
   #   env:                          
   #       MIDSCENE_REPLANNING_CYCLE_LIMIT: "30"
   # - agent_id: claude_haiku_4_6
@@ -35,7 +35,7 @@ agents:
 
   # - agent_id: glm_4.6v_flash
   - agent_id: claude_opus_4_6
-  # - agent_id: gemini_3_1
+  - agent_id: gemini_3_1
   # - agent_id: qwen3vl_30b_a3b
   # - agent_id: qwen25vl_7b
   # - agent_id: qwen35_7b
@@ -57,106 +57,106 @@ agents:
 #   n_questions  → sample size (omit or null = use all)
 #   seed         → random seed for reproducible sampling
 # =============================================================================
-datasets:
+# datasets:
   # - name: custom
   #   source: builtin
 
-  - name: 2wikimultihop_val
-    source: datasets/2wikimultihop_val.json
-    hf_dataset: 2wikimultihop
-    split: validation
-    n_questions: 75
-    seed: 42
+#   - name: 2wikimultihop_val
+#     source: datasets/2wikimultihop_val.json
+#     hf_dataset: 2wikimultihop
+#     split: validation
+#     n_questions: 75
+#     seed: 42
 
-  # # --- Additional splits (uncomment + run prep_datasets.py to activate) ---
+#   # # --- Additional splits (uncomment + run prep_datasets.py to activate) ---
 
-  - name: 2wikimultihop_train
-    source: datasets/2wikimultihop_train.json
-    hf_dataset: 2wikimultihop
-    split: train
-    n_questions: 150
-    seed: 42
+#   - name: 2wikimultihop_train
+#     source: datasets/2wikimultihop_train.json
+#     hf_dataset: 2wikimultihop
+#     split: train
+#     n_questions: 150
+#     seed: 42
 
-  - name: 2wikimultihop_test
-    source: datasets/2wikimultihop_test.json
-    hf_dataset: 2wikimultihop
-    split: test
-    n_questions: 75
-    seed: 42
+#   - name: 2wikimultihop_test
+#     source: datasets/2wikimultihop_test.json
+#     hf_dataset: 2wikimultihop
+#     split: test
+#     n_questions: 75
+#     seed: 42
 
-# =============================================================================
-# Amazon / WebShop shopping experiment
-# Uncomment the block below to run shopping episodes.
-# First prep datasets: python prep_datasets.py --config custom_config.yaml
-# =============================================================================
+# # =============================================================================
+# # Amazon / WebShop shopping experiment
+# # Uncomment the block below to run shopping episodes.
+# # First prep datasets: python prep_datasets.py --config custom_config.yaml
+# # =============================================================================
 
-# datasets:
-  # WebShop train/val/test — non-overlapping slices from the same 12k pool
-  # seed=42 shuffles once; offset ensures no question appears in two splits
-  - name: webshop_train
-    source: datasets/webshop_train.json
-    hf_dataset: webshop_goals
-    n_questions: 150
-    seed: 42
-    offset: 0
-    start_url: "https://www.amazon.com"
-    task_type: shop
-    task_prompt_template: |
-      You are a shopping assistant. Search Amazon to find a product matching this description:
-      "{question}"
-      Browse freely. Search, filter, view product pages, and add promising items to your cart.
-      You may remove items from your cart if you find better alternatives.
-      When done, your cart should contain only the product(s) that best match the description.
-      Do NOT proceed to checkout or log in.
+# # datasets:
+#   # WebShop train/val/test — non-overlapping slices from the same 12k pool
+#   # seed=42 shuffles once; offset ensures no question appears in two splits
+#   - name: webshop_train
+#     source: datasets/webshop_train.json
+#     hf_dataset: webshop_goals
+#     n_questions: 150
+#     seed: 42
+#     offset: 0
+#     start_url: "https://www.amazon.com"
+#     task_type: shop
+#     task_prompt_template: |
+#       You are a shopping assistant. Search Amazon to find a product matching this description:
+#       "{question}"
+#       Browse freely. Search, filter, view product pages, and add promising items to your cart.
+#       You may remove items from your cart if you find better alternatives.
+#       When done, your cart should contain only the product(s) that best match the description.
+#       Do NOT proceed to checkout or log in.
 
-  - name: webshop_val
-    source: datasets/webshop_val.json
-    hf_dataset: webshop_goals
-    n_questions: 75
-    seed: 42
-    offset: 150
-    start_url: "https://www.amazon.com"
-    task_type: shop
-    task_prompt_template: |
-      You are a shopping assistant. Search Amazon to find a product matching this description:
-      "{question}"
-      Browse freely. Search, filter, view product pages, and add promising items to your cart.
-      You may remove items from your cart if you find better alternatives.
-      When done, your cart should contain only the product(s) that best match the description.
-      Do NOT proceed to checkout or log in.
+#   - name: webshop_val
+#     source: datasets/webshop_val.json
+#     hf_dataset: webshop_goals
+#     n_questions: 75
+#     seed: 42
+#     offset: 150
+#     start_url: "https://www.amazon.com"
+#     task_type: shop
+#     task_prompt_template: |
+#       You are a shopping assistant. Search Amazon to find a product matching this description:
+#       "{question}"
+#       Browse freely. Search, filter, view product pages, and add promising items to your cart.
+#       You may remove items from your cart if you find better alternatives.
+#       When done, your cart should contain only the product(s) that best match the description.
+#       Do NOT proceed to checkout or log in.
 
-  - name: webshop_test
-    source: datasets/webshop_test.json
-    hf_dataset: webshop_goals
-    n_questions: 75
-    seed: 42
-    offset: 225
-    start_url: "https://www.amazon.com"
-    task_type: shop
-    task_prompt_template: |
-      You are a shopping assistant. Search Amazon to find a product matching this description:
-      "{question}"
-      Browse freely. Search, filter, view product pages, and add promising items to your cart.
-      You may remove items from your cart if you find better alternatives.
-      When done, your cart should contain only the product(s) that best match the description.
-      Do NOT proceed to checkout or log in.
+#   - name: webshop_test
+#     source: datasets/webshop_test.json
+#     hf_dataset: webshop_goals
+#     n_questions: 75
+#     seed: 42
+#     offset: 225
+#     start_url: "https://www.amazon.com"
+#     task_type: shop
+#     task_prompt_template: |
+#       You are a shopping assistant. Search Amazon to find a product matching this description:
+#       "{question}"
+#       Browse freely. Search, filter, view product pages, and add promising items to your cart.
+#       You may remove items from your cart if you find better alternatives.
+#       When done, your cart should contain only the product(s) that best match the description.
+#       Do NOT proceed to checkout or log in.
 
-  # DeepShop — OOD evaluation only (never used for training)
-  - name: deepshop_ood
-    source: datasets/deepshop_ood.json
-    hf_dataset: deepshop
-    split: train
-    n_questions: 150
-    seed: 42
-    start_url: "https://www.amazon.com"
-    task_type: shop
-    task_prompt_template: |
-      You are a shopping assistant. Search Amazon to find a product matching this description:
-      "{question}"
-      Browse freely. Search, filter, view product pages, and add promising items to your cart.
-      You may remove items from your cart if you find better alternatives.
-      When done, your cart should contain only the product(s) that best match the description.
-      Do NOT proceed to checkout or log in.
+#   # DeepShop — OOD evaluation only (never used for training)
+#   - name: deepshop_ood
+#     source: datasets/deepshop_ood.json
+#     hf_dataset: deepshop
+#     split: train
+#     n_questions: 150
+#     seed: 42
+#     start_url: "https://www.amazon.com"
+#     task_type: shop
+#     task_prompt_template: |
+#       You are a shopping assistant. Search Amazon to find a product matching this description:
+#       "{question}"
+#       Browse freely. Search, filter, view product pages, and add promising items to your cart.
+#       You may remove items from your cart if you find better alternatives.
+#       When done, your cart should contain only the product(s) that best match the description.
+#       Do NOT proceed to checkout or log in.
 
 # =============================================================================
 # WebGames — interactive browser challenges (webgames.convergence.ai)
@@ -165,24 +165,24 @@ datasets:
 # Prep datasets first: python prep_datasets.py --config custom_config.yaml
 # =============================================================================
 
-# datasets:
-  # - name: webgames_train
-  #   source: datasets/webgames_train.json
-  #   hf_dataset: webgames
-  #   n_questions: 100
-  #   offset: 0
-  #   task_type: webgames
+datasets:
+  - name: webgames_train
+    source: datasets/webgames_train.json
+    hf_dataset: webgames
+    n_questions: 100
+    offset: 0
+    task_type: webgames
 
-  # - name: webgames_val
-  #   source: datasets/webgames_val.json
-  #   hf_dataset: webgames
-  #   n_questions: 25
-  #   offset: 100
-  #   task_type: webgames
+  - name: webgames_val
+    source: datasets/webgames_val.json
+    hf_dataset: webgames
+    n_questions: 25
+    offset: 100
+    task_type: webgames
 
-  # - name: webgames_test
-  #   source: datasets/webgames_test.json
-  #   hf_dataset: webgames
-  #   n_questions: 25
-  #   offset: 125
-  #   task_type: webgames
+  - name: webgames_test
+    source: datasets/webgames_test.json
+    hf_dataset: webgames
+    n_questions: 25
+    offset: 125
+    task_type: webgames
