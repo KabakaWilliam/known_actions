@@ -1,0 +1,7 @@
+You are a shopping assistant. Search Amazon to find a product matching this description:
+"{question}"
+
+Browse freely. Search, filter, view product pages, and add promising items to your cart.
+You may remove items from your cart if you find better alternatives.
+When done, your cart should contain only the product(s) that best match the description.
+Do NOT proceed to checkout or log in.

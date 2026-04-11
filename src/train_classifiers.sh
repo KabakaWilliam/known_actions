@@ -8,12 +8,15 @@
 # Uncomment experiment blocks below to activate them.
 
 set -euo pipefail
+trap 'kill 0' EXIT  # kill all child processes (incl. orphaned joblib workers) on exit
 cd "$(dirname "$0")"  # always run from src/
 
 PYTHON=/opt/anaconda/envs/dispatch/bin/python
 TRACES_DIR=./traces
-CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2}"   # override: CUDA_VISIBLE_DEVICES=2 bash train_classifiers.sh
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-1}"   # override: CUDA_VISIBLE_DEVICES=2 bash train_classifiers.sh
 export CUDA_VISIBLE_DEVICES
+APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-/VData/linna4335/.apptainer_cache}"
+export APPTAINER_CACHEDIR
 FILTER="${1:-}"  # optional positional arg: only run experiments whose tag matches
 
 run_experiment() {
@@ -45,9 +48,9 @@ run_experiment() {
 #     --train-datasets webshop
 
 # ── Amazon train → Wiki + DeepShop OOD ───────────────────────────────────────────────
-run_experiment webshop_ood_deepshop_wiki \
-    --train-datasets webshop \
-    --ood-datasets deepshop 2wikimultihop
+# run_experiment webshop_ood_deepshop_wiki \
+#     --train-datasets webshop \
+#     --ood-datasets deepshop 2wikimultihop
 
 # ── Amazon train → Wikipedia OOD ──────────────────────────────────────────────
 # run_experiment amazon_ood_wiki \
@@ -67,9 +70,22 @@ run_experiment webshop_ood_deepshop_wiki \
 #     --train-datasets 2wikimultihop \
 #     --agents gpt_5_4
 
-# ── WebGames in-domain ────────────────────────────────────────────────────────
+# # ── WebGames in-domain ────────────────────────────────────────────────────────
 # run_experiment webgames \
 #     --train-datasets webgames
+
+run_experiment webgames_all_ood \
+    --train-datasets webgames \
+    --ood-datasets 2wikimultihop webshop deepshop \
+    --agents gpt_5_4 claude_opus_4_6 gemini_3_1 glm_4.6v_flash uitars_7b qwen3vl_8b
+    # --agents gpt_5_4 claude_opus_4_6 gemini_3_1 glm_4.6v_flash qwen3vl_30b_a3b uitars_7b
+
+
+# # ── WebGames in-domain proprietery only ────────────────────────────────────────────────────────
+# run_experiment webgames_proprietary \
+#     --train-datasets webgames \
+#     --agents gpt_5_4 claude_opus_4_6 gemini_3_1 \
+#     --ood-datasets 2wikimultihop webshop deepshop
 
 # ── WebGames train → 2wikimultihop + webshop OOD ─────────────────────────────
 # run_experiment webgames_ood_wiki_webshop \

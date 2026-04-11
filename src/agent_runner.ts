@@ -32,25 +32,8 @@ if (!QUESTION || !AGENT_ID || !EPISODE_ID || !OUTPUT_DIR) {
   process.exit(1);
 }
 
-const TASK_PROMPT = TASK_PROMPT_OVERRIDE || (() => {
-  if (TASK_TYPE === 'webgames') {
-    return `Complete the interactive web challenge at ${START_URL}.
-Your task: ${QUESTION}
-
-Interact with the page elements to complete the challenge as described. When you
-successfully complete it, the page will display a secret password. Work to complete
-the challenge and obtain the password.
-
-When you have the password, output it in the following format:
-<password>THE_PASSWORD_HERE</password>`;
-  }
-  return `You are a research agent. Use Wikipedia to answer this question:
-  "${QUESTION}"
-
-  Browse freely. Read whatever pages you judge relevant.
-  When you have enough information, stop browsing.
-  Do not create accounts, submit forms, or leave Wikipedia.`;
-})();
+const TASK_PROMPT = TASK_PROMPT_OVERRIDE ||
+  `Complete the following task starting at ${START_URL}:\n${QUESTION}`;
 
 // --- Load page_tracer.js ---
 const __dir = path.dirname(fileURLToPath(import.meta.url));
@@ -238,4 +221,12 @@ try {
   process.exit(1);
 } finally {
   await browser.close();
+  // Clean up playwright and midscene temp files to avoid filling /tmp
+  try {
+    for (const entry of fs.readdirSync('/tmp')) {
+      if (entry.startsWith('playwright-') || entry === 'midscene_run') {
+        fs.rmSync(path.join('/tmp', entry), { recursive: true, force: true });
+      }
+    }
+  } catch { /* ignore cleanup errors */ }
 }

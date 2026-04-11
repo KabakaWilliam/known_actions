@@ -16,11 +16,28 @@ except ImportError:
     print("tqdm not installed. Run: pip install tqdm")
     sys.exit(1)
 
-PROJECT_DIR  = Path(__file__).parent.resolve()
-REGISTRY     = PROJECT_DIR / "config.yaml"           # agent + loader registry
-DEFAULT_CFG  = PROJECT_DIR / "custom_config.yaml"    # default experiment spec
-SIF_PATH     = PROJECT_DIR / "agent.sif"
-OUTPUT_DIR   = PROJECT_DIR / "traces"
+PROJECT_DIR   = Path(__file__).parent.resolve()
+REGISTRY      = PROJECT_DIR / "config.yaml"           # agent + loader registry
+DEFAULT_CFG   = PROJECT_DIR / "custom_config.yaml"    # default experiment spec
+SIF_PATH      = PROJECT_DIR / "agent.sif"
+OUTPUT_DIR    = PROJECT_DIR / "traces"
+TEMPLATES_DIR = PROJECT_DIR / "task_prompt_templates"
+
+
+def load_template(name_or_inline: str | None, task_type: str) -> str | None:
+    """Resolve a prompt template string.
+
+    Priority:
+      1. name_or_inline is a multiline string → use inline as-is (backwards compat)
+      2. name_or_inline is a short name → load task_prompt_templates/{name}.txt
+      3. name_or_inline is None → try task_prompt_templates/{task_type}.txt
+      4. No matching file → return None (agent_runner uses its own fallback)
+    """
+    if name_or_inline is not None and "\n" in name_or_inline:
+        return name_or_inline
+    name = name_or_inline or task_type
+    path = TEMPLATES_DIR / f"{name}.txt"
+    return path.read_text() if path.exists() else None
 
 load_dotenv(PROJECT_DIR / ".env")
 
@@ -91,12 +108,13 @@ def resolve_datasets(exp: dict) -> list[dict]:
         if n is not None and len(questions) > n:
             questions = random.Random(seed).sample(questions, n)
 
+        task_type = dcfg.get("task_type", "qa")
         datasets.append({
             "name":                  name,
             "questions":             questions,
             "start_url":             dcfg.get("start_url", "https://en.wikipedia.org"),
-            "task_prompt_template":  dcfg.get("task_prompt_template"),  # None → agent_runner uses default
-            "task_type":             dcfg.get("task_type", "qa"),
+            "task_prompt_template":  load_template(dcfg.get("task_prompt_template"), task_type),
+            "task_type":             task_type,
         })
 
     return datasets
@@ -126,7 +144,8 @@ def build_apptainer_cmd(agent, q: dict, episode_id, output_dir: str, dataset: di
     ]
     template = dataset.get("task_prompt_template")
     if template:
-        cmd += ["--task_prompt", template.replace("{question}", question)]
+        prompt = template.replace("{question}", question).replace("{start_url}", start_url)
+        cmd += ["--task_prompt", prompt]
     expected_answer = q.get("answer")
     if expected_answer:
         cmd += ["--expected-answer", expected_answer]

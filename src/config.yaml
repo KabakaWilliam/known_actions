@@ -23,14 +23,24 @@ midscene_defaults:
 agents:
 
   # --- Local vLLM models (start server before running) ---
-# google/gemma-4-26B-A4B-it
+  - agent_id: gemma-4-31B-it
+    display_name: "Gemma-4-31B-it"
+    source: open
+    env:
+      MIDSCENE_MODEL_NAME:              "google/gemma-4-31B-it"
+      MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"
+      MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3030/v1"
+      MIDSCENE_MODEL_FAMILY:   "gemini"
+      MIDSCENE_REPLANNING_CYCLE_LIMIT:  "40"
+
   - agent_id: gemma_4_26B_A4B_it
     display_name: "Gemma-4-26B"
     source: open
     env:
-      MIDSCENE_MODEL_NAME:              "gemma-4-26B-A4B-it"
+      MIDSCENE_MODEL_NAME:              "google/gemma-4-26B-A4B-it"
       MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"
-      MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3031/v1"
+      MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3030/v1"
+      MIDSCENE_MODEL_FAMILY:   "gemini"
       MIDSCENE_REPLANNING_CYCLE_LIMIT:  "40"
       
   - agent_id: glm_4.6v_flash
@@ -73,14 +83,17 @@ agents:
       MIDSCENE_MODEL_FAMILY:            "qwen2.5-vl"
       MIDSCENE_REPLANNING_CYCLE_LIMIT:  "40"
 
-  - agent_id: qwen35_7b
-    display_name: "Qwen3.5-7B"
+
+
+  - agent_id: qwen3_5_27b
+    display_name: "Qwen3.5-27B"
     source: open
     env:
-      MIDSCENE_MODEL_NAME:              "Qwen/Qwen3.5-VL-7B-Instruct"
+      MIDSCENE_MODEL_NAME:              "Qwen/Qwen3.5-27B"
       MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"
-      MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3032/v1"
+      MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3030/v1"
       MIDSCENE_MODEL_FAMILY:            "qwen3.5"
+      MIDSCENE_MODEL_REASONING_ENABLED: "false"
       MIDSCENE_REPLANNING_CYCLE_LIMIT:  "40"
 
   - agent_id: uitars_7b
