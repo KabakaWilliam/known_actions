@@ -117,6 +117,7 @@ LOADERS = {
     "2wikimultihop": _hf_load,
     "webshop_goals": _webshop_load,
     "deepshop":      _hf_load,     # same loader — question_field/answer_field from registry
+    "frames":        _hf_load,     # same loader — question_field/answer_field from registry
     "webgames":      _webgames_load,
 }
 

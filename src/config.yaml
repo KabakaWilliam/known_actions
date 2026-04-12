@@ -211,6 +211,13 @@ dataset_loaders:
     question_field: "ques"
     answer_field: null
 
+  # FRAMES: Google multi-hop QA benchmark. Test split only (824 questions).
+  # question_field "Prompt" and answer_field "Answer" differ from HF defaults.
+  frames:
+    hf_repo: "google/frames-benchmark"
+    question_field: "Prompt"
+    answer_field: "Answer"
+
   # WebGames: 150 interactive browser challenges fetched from GitHub JSONL.
   # Each task has its own start_url (webgames.convergence.ai/{path}).
   # Splits: train=0-99 (100), val=100-124 (25), test=125-149 (25).

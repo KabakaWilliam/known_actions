@@ -13,7 +13,7 @@ cd "$(dirname "$0")"  # always run from src/
 
 PYTHON=/opt/anaconda/envs/dispatch/bin/python
 TRACES_DIR=./traces
-CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-1}"   # override: CUDA_VISIBLE_DEVICES=2 bash train_classifiers.sh
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"   # override: CUDA_VISIBLE_DEVICES=2 bash train_classifiers.sh
 export CUDA_VISIBLE_DEVICES
 APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-/VData/linna4335/.apptainer_cache}"
 export APPTAINER_CACHEDIR
@@ -42,6 +42,12 @@ run_experiment() {
 # run_experiment wiki_ood_amazon_deep \
 #     --train-datasets 2wikimultihop \
 #     --ood-datasets webshop deepshop
+
+# ── Wikipedia in-domain_selective ────────────────────────────────────────────────────────
+run_experiment wiki \
+    --train-datasets 2wikimultihop \
+    --ood-datasets webshop deepshop \
+    # --agents gpt_5_4 claude_opus_4_6 gemini_3_1 glm_4.6v_flash uitars_7b qwen3vl_8b
 
 # # ── Amazon in-domain ──────────────────────────────────────────────────────────
 # run_experiment webshop \
@@ -74,11 +80,11 @@ run_experiment() {
 # run_experiment webgames \
 #     --train-datasets webgames
 
-run_experiment webgames_all_ood \
-    --train-datasets webgames \
-    --ood-datasets 2wikimultihop webshop deepshop \
-    --agents gpt_5_4 claude_opus_4_6 gemini_3_1 glm_4.6v_flash uitars_7b qwen3vl_8b
-    # --agents gpt_5_4 claude_opus_4_6 gemini_3_1 glm_4.6v_flash qwen3vl_30b_a3b uitars_7b
+# run_experiment webgames_all_ood \
+#     --train-datasets webgames \
+#     --ood-datasets 2wikimultihop webshop deepshop \
+#     --agents gpt_5_4 claude_opus_4_6 gemini_3_1 glm_4.6v_flash uitars_7b qwen3vl_8b
+#     # --agents gpt_5_4 claude_opus_4_6 gemini_3_1 glm_4.6v_flash qwen3vl_30b_a3b uitars_7b
 
 
 # # ── WebGames in-domain proprietery only ────────────────────────────────────────────────────────

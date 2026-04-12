@@ -24,7 +24,7 @@ agents:
   # - agent_id: gemma-4-31B-it
   # - agent_id: qwen3_5_27b
   # - agent_id: gemma_4_26B_A4B_it
-  # - agent_id: qwen3vl_8b
+  - agent_id: qwen3vl_8b
     # env:                          # uncomment to override for this experiment
     #   MIDSCENE_REPLANNING_CYCLE_LIMIT: "40"
 
@@ -39,7 +39,7 @@ agents:
   # - agent_id: glm_4.6v_flash
   # - agent_id: claude_opus_4_6
   # - agent_id: gemini_3_1
-  - agent_id: qwen3vl_30b_a3b
+  # - agent_id: qwen3vl_30b_a3b
   # - agent_id: qwen25vl_7b
   # - agent_id: qwen35_7b
   # - agent_id: uitars_7b
@@ -60,7 +60,7 @@ agents:
 #   n_questions  → sample size (omit or null = use all)
 #   seed         → random seed for reproducible sampling
 # =============================================================================
-# datasets:
+datasets:
 #   # - name: custom
 #   #   source: builtin
 
@@ -86,6 +86,15 @@ agents:
 #     split: test
 #     n_questions: 75
 #     seed: 42
+
+  # FRAMES — Google multi-hop QA benchmark. Test split only (824 questions).
+  # Uses qa.txt prompt (Wikipedia browsing agent), same as 2wikimultihop.
+  - name: frames_test
+    source: datasets/frames_test.json
+    hf_dataset: frames
+    split: test
+    # n_questions: 824   # omit to use all 824; set a lower value to cap
+    seed: 42
 
 # # # =============================================================================
 # # # Amazon / WebShop shopping experiment
@@ -168,24 +177,24 @@ agents:
 # # Prep datasets first: python prep_datasets.py --config custom_config.yaml
 # # =============================================================================
 
-datasets:
-  - name: webgames_train
-    source: datasets/webgames_train.json
-    hf_dataset: webgames
-    n_questions: 100
-    offset: 0
-    task_type: webgames
+# datasets:
+#   - name: webgames_train
+#     source: datasets/webgames_train.json
+#     hf_dataset: webgames
+#     n_questions: 100
+#     offset: 0
+#     task_type: webgames
 
-  - name: webgames_val
-    source: datasets/webgames_val.json
-    hf_dataset: webgames
-    n_questions: 25
-    offset: 100
-    task_type: webgames
+#   - name: webgames_val
+#     source: datasets/webgames_val.json
+#     hf_dataset: webgames
+#     n_questions: 25
+#     offset: 100
+#     task_type: webgames
 
-  - name: webgames_test
-    source: datasets/webgames_test.json
-    hf_dataset: webgames
-    n_questions: 25
-    offset: 125
-    task_type: webgames
+#   - name: webgames_test
+#     source: datasets/webgames_test.json
+#     hf_dataset: webgames
+#     n_questions: 25
+#     offset: 125
+#     task_type: webgames

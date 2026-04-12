@@ -1,10 +1,10 @@
-CUDA_VISIBLE_DEVICES=1,3 vllm serve Qwen/Qwen3-VL-30B-A3B-Instruct \
-    --port 3030 \
-    --limit-mm-per-prompt.video 0 \
-    --tensor-parallel-size 2 \
-    --max_model_len 163840 \
-    --gpu-memory-utilization 0.75 \
-    --async-scheduling 
+# CUDA_VISIBLE_DEVICES=1,3 vllm serve Qwen/Qwen3-VL-30B-A3B-Instruct \
+#     --port 3030 \
+#     --limit-mm-per-prompt.video 0 \
+#     --tensor-parallel-size 2 \
+#     --max_model_len 163840 \
+#     --gpu-memory-utilization 0.75 \
+#     --async-scheduling 
 
 # CUDA_VISIBLE_DEVICES=1,3 vllm serve google/gemma-4-31B-it \
 #   --port 3030 \
@@ -15,7 +15,6 @@ CUDA_VISIBLE_DEVICES=1,3 vllm serve Qwen/Qwen3-VL-30B-A3B-Instruct \
 # CUDA_VISIBLE_DEVICES=3 vllm serve google/gemma-4-26B-A4B-it \
 #     --port 3030 \
 #     --max-model-len 32768 \
-#     --gpu-memory-utilization 0.90
 
 
 # CUDA_VISIBLE_DEVICES=3 vllm serve Qwen/Qwen3.5-27B \
@@ -25,11 +24,11 @@ CUDA_VISIBLE_DEVICES=1,3 vllm serve Qwen/Qwen3-VL-30B-A3B-Instruct \
 #     --enable-prefix-caching \
 #     --max_model_len 163840 
 
-# CUDA_VISIBLE_DEVICES=3 vllm serve Qwen/Qwen3-VL-8B-Instruct \
-#     --port 3030 \
-#     --gpu-memory-utilization 0.9 \
-#     --limit-mm-per-prompt.video 0 \
-#     --max_model_len 163840
+CUDA_VISIBLE_DEVICES=3 vllm serve Qwen/Qwen3-VL-8B-Instruct \
+    --port 3030 \
+    --gpu-memory-utilization 0.9 \
+    --limit-mm-per-prompt.video 0 \
+    --max_model_len 163840
 
 # CUDA_VISIBLE_DEVICES=2 vllm serve zai-org/GLM-4.6V-Flash \
 #      --trust-remote-code \
