@@ -91,7 +91,7 @@ agents:
     env:
       MIDSCENE_MODEL_NAME:              "Qwen/Qwen3.5-27B"
       MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"
-      MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3030/v1"
+      MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3031/v1"
       MIDSCENE_MODEL_FAMILY:            "qwen3.5"
       MIDSCENE_MODEL_REASONING_ENABLED: "false"
       MIDSCENE_REPLANNING_CYCLE_LIMIT:  "40"

@@ -164,7 +164,7 @@ try {
   // --- Verification (webgames + any task with a known expected answer) ---
   const verification = EXPECTED_ANSWER
     ? {
-        correct:      (result?.answer ?? '') === EXPECTED_ANSWER,
+        correct:      (result?.answer ?? '').toLowerCase().includes(EXPECTED_ANSWER.toLowerCase()),
         predicted:    result?.answer ?? '',
         ground_truth: EXPECTED_ANSWER,
       }

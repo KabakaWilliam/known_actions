@@ -17,18 +17,18 @@
 #     --max-model-len 32768 \
 
 
-# CUDA_VISIBLE_DEVICES=3 vllm serve Qwen/Qwen3.5-27B \
-#     --port 3030 \
-#     --limit-mm-per-prompt.video 0 \
-#     --reasoning-parser qwen3 \
-#     --enable-prefix-caching \
-#     --max_model_len 163840 
-
-CUDA_VISIBLE_DEVICES=3 vllm serve Qwen/Qwen3-VL-8B-Instruct \
-    --port 3030 \
-    --gpu-memory-utilization 0.9 \
+CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3.5-27B \
+    --port 3031 \
     --limit-mm-per-prompt.video 0 \
-    --max_model_len 163840
+    --reasoning-parser qwen3 \
+    --enable-prefix-caching \
+    --max_model_len 163840 
+
+# CUDA_VISIBLE_DEVICES=3 vllm serve Qwen/Qwen3-VL-8B-Instruct \
+#     --port 3030 \
+#     --gpu-memory-utilization 0.9 \
+#     --limit-mm-per-prompt.video 0 \
+#     --max_model_len 163840
 
 # CUDA_VISIBLE_DEVICES=2 vllm serve zai-org/GLM-4.6V-Flash \
 #      --trust-remote-code \
@@ -55,8 +55,6 @@ CUDA_VISIBLE_DEVICES=3 vllm serve Qwen/Qwen3-VL-8B-Instruct \
 
 
 # Planned models:
-# Qwen/Qwen3.5-27B
-# google/gemma-4-26B-A4B-it
 
 
 # claude-haiku-4-5-20251001

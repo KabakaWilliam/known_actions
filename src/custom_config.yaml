@@ -12,7 +12,7 @@
 run:
   episodes_per_combo: 1   # one unique episode per (agent × question) pair
   timeout_s: 300          # per-episode timeout in seconds
-  workers: 5              # parallel episodes; 1 = serial
+  workers: 10              # parallel episodes; 1 = serial
 
 # =============================================================================
 # Agents
@@ -22,9 +22,9 @@ run:
 # =============================================================================
 agents:
   # - agent_id: gemma-4-31B-it
-  # - agent_id: qwen3_5_27b
+  - agent_id: qwen3_5_27b
   # - agent_id: gemma_4_26B_A4B_it
-  - agent_id: qwen3vl_8b
+  # - agent_id: qwen3vl_8b
     # env:                          # uncomment to override for this experiment
     #   MIDSCENE_REPLANNING_CYCLE_LIMIT: "40"
 
@@ -89,12 +89,12 @@ datasets:
 
   # FRAMES — Google multi-hop QA benchmark. Test split only (824 questions).
   # Uses qa.txt prompt (Wikipedia browsing agent), same as 2wikimultihop.
-  - name: frames_test
-    source: datasets/frames_test.json
-    hf_dataset: frames
-    split: test
-    # n_questions: 824   # omit to use all 824; set a lower value to cap
-    seed: 42
+  # - name: frames_test
+  #   source: datasets/frames_test.json
+  #   hf_dataset: frames
+  #   split: test
+  #   # n_questions: 824   # omit to use all 824; set a lower value to cap
+  #   seed: 42
 
 # # # =============================================================================
 # # # Amazon / WebShop shopping experiment
@@ -178,23 +178,30 @@ datasets:
 # # =============================================================================
 
 # datasets:
-#   - name: webgames_train
-#     source: datasets/webgames_train.json
-#     hf_dataset: webgames
-#     n_questions: 100
-#     offset: 0
-#     task_type: webgames
+  - name: webgames_train
+    source: datasets/webgames_train.json
+    hf_dataset: webgames
+    n_questions: 100
+    offset: 0
+    task_type: webgames
 
-#   - name: webgames_val
-#     source: datasets/webgames_val.json
-#     hf_dataset: webgames
-#     n_questions: 25
-#     offset: 100
-#     task_type: webgames
+  - name: webgames_val
+    source: datasets/webgames_val.json
+    hf_dataset: webgames
+    n_questions: 25
+    offset: 100
+    task_type: webgames
 
-#   - name: webgames_test
-#     source: datasets/webgames_test.json
-#     hf_dataset: webgames
-#     n_questions: 25
-#     offset: 125
-#     task_type: webgames
+  - name: webgames_test
+    source: datasets/webgames_test.json
+    hf_dataset: webgames
+    n_questions: 25
+    offset: 125
+    task_type: webgames
+
+  - name: frames_test
+    source: datasets/frames_test.json
+    hf_dataset: frames
+    split: test
+    # n_questions: 824   # omit to use all 824; set a lower value to cap
+    seed: 42

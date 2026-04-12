@@ -269,6 +269,10 @@ def load_dataset(trace_dir: Path,
                  train_datasets: list[str] | None = None,
                  ood_datasets: list[str] | None = None,
                  agents: list[str] | None = None,
+                 resplit_datasets: list[str] | None = None,
+                 resplit_fracs: tuple[float, float, float] = (0.5, 0.25, 0.25),
+                 resplit_seed: int = 42,
+                 resplit_n_per_agent: int | None = None,
                  ) -> tuple[dict[str, tuple], dict[str, set]]:
     """Load all episode traces, bucketed by split.
 
@@ -281,13 +285,24 @@ def load_dataset(trace_dir: Path,
     ood_datasets: base names whose traces all go into the OOD bucket regardless
       of suffix. e.g. ["webshop"] loads webshop_train/val/test all as OOD.
 
-    If both are None: legacy mode — all datasets, split by suffix.
+    resplit_datasets: subset of train_datasets whose traces lack explicit
+      train/val/test directory splits (e.g. "frames" only has frames_test).
+      All matching traces are pooled then stratified-split by agent into
+      train/val/test using resplit_fracs (default 50/25/25 to match 2wiki).
+
+    resplit_n_per_agent: if set, cap each agent's pool to this many episodes
+      before splitting (sampled randomly). Use 300 to match 2wiki's ~150/75/75
+      per-agent budget and keep the two experiments comparable.
+
+    If both train_datasets and ood_datasets are None: legacy mode — all
+      datasets, split by suffix.
 
     Returns (splits, ds_names) where:
       splits   = {"train": (features, sequences, labels, ds_bases), "val": ..., ...}
         ds_bases is a list of base dataset names (one per episode), used for per-OOD-dataset eval
       ds_names = {"train": {"2wikimultihop_train", ...}, "val": ..., ...}
     """
+    resplit_datasets = set(resplit_datasets or [])
     buckets: dict[str, tuple[list, list, list, list]] = {
         "train": ([], [], [], []),
         "val":   ([], [], [], []),
@@ -295,6 +310,9 @@ def load_dataset(trace_dir: Path,
         "ood":   ([], [], [], []),
     }
     ds_names: dict[str, set] = {"train": set(), "val": set(), "test": set(), "ood": set()}
+    # staging pool for datasets that need a post-hoc stratified split
+    resplit_pool: list[tuple] = []  # (feat, seq, label, base, dataset_name)
+
     for path in sorted(trace_dir.rglob("*.json")):
         rel_parts = path.relative_to(trace_dir).parts
         if rel_parts[0].startswith("models"):
@@ -326,13 +344,47 @@ def load_dataset(trace_dir: Path,
         try:
             with open(path) as f:
                 episode = json.load(f)
-            buckets[split][0].append(extract_features(episode))
-            buckets[split][1].append(extract_sequence(episode))
-            buckets[split][2].append(episode["meta"]["agent_id"])
-            buckets[split][3].append(base)
-            ds_names[split].add(dataset_name)
+            feat = extract_features(episode)
+            seq  = extract_sequence(episode)
+            lbl  = episode["meta"]["agent_id"]
+            if base in resplit_datasets:
+                resplit_pool.append((feat, seq, lbl, base, dataset_name))
+            else:
+                buckets[split][0].append(feat)
+                buckets[split][1].append(seq)
+                buckets[split][2].append(lbl)
+                buckets[split][3].append(base)
+                ds_names[split].add(dataset_name)
         except Exception as e:
             warnings.warn(f"Skipping {path.name}: {e}")
+
+    # Stratified split for resplit_datasets — group by agent, split within each
+    if resplit_pool:
+        import random as _random
+        rng = _random.Random(resplit_seed)
+        by_agent: dict[str, list] = {}
+        for item in resplit_pool:
+            by_agent.setdefault(item[2], []).append(item)
+        tr_f, va_f, _ = resplit_fracs
+        for agent_items in by_agent.values():
+            rng.shuffle(agent_items)
+            if resplit_n_per_agent is not None:
+                agent_items = agent_items[:resplit_n_per_agent]
+            n = len(agent_items)
+            n_train = int(n * tr_f)
+            n_val   = int(n * va_f)
+            assignments = (
+                [("train", i) for i in agent_items[:n_train]] +
+                [("val",   i) for i in agent_items[n_train:n_train + n_val]] +
+                [("test",  i) for i in agent_items[n_train + n_val:]]
+            )
+            for dest, (feat, seq, lbl, base, dataset_name) in assignments:
+                buckets[dest][0].append(feat)
+                buckets[dest][1].append(seq)
+                buckets[dest][2].append(lbl)
+                buckets[dest][3].append(base)
+                ds_names[dest].add(dataset_name)
+
     return {s: tuple(lists) for s, lists in buckets.items()}, ds_names
 
 
@@ -538,9 +590,13 @@ LR_PARAM_GRID = {
 def train(trace_dir: Path, tag: str | None = None,
           train_datasets: list[str] | None = None,
           ood_datasets: list[str] | None = None,
-          agents: list[str] | None = None) -> None:
+          agents: list[str] | None = None,
+          resplit_datasets: list[str] | None = None,
+          resplit_n_per_agent: int | None = None) -> None:
     splits, ds_names = load_dataset(trace_dir, train_datasets=train_datasets,
-                                    ood_datasets=ood_datasets, agents=agents)
+                                    ood_datasets=ood_datasets, agents=agents,
+                                    resplit_datasets=resplit_datasets,
+                                    resplit_n_per_agent=resplit_n_per_agent)
     feat_train, seq_train, lbl_train, _           = splits["train"]
     feat_val,   seq_val,   lbl_val,   _           = splits["val"]
     feat_test,  seq_test,  lbl_test,  _           = splits["test"]
@@ -852,6 +908,18 @@ if __name__ == "__main__":
                         metavar="AGENT_ID",
                         help="Agent IDs to include (e.g. --agents gpt_5_4 qwen3vl_8b). "
                              "Default: all agents found in traces-dir.")
+    parser.add_argument("--resplit-datasets", nargs="+", default=None,
+                        metavar="NAME",
+                        help="Subset of --train-datasets that lack explicit train/val/test "
+                             "directory splits (e.g. --resplit-datasets frames). All matching "
+                             "traces are pooled and stratified-split 50/25/25 by agent.")
+    parser.add_argument("--resplit-n-per-agent", type=int, default=None,
+                        metavar="N",
+                        help="Cap each agent's pool to N episodes before splitting "
+                             "(e.g. --resplit-n-per-agent 300 → 150/75/75 per agent, "
+                             "matching 2wikimultihop's budget for a fair comparison).")
     cli = parser.parse_args()
     train(cli.traces_dir, tag=cli.tag, train_datasets=cli.train_datasets,
-          ood_datasets=cli.ood_datasets, agents=cli.agents)
+          ood_datasets=cli.ood_datasets, agents=cli.agents,
+          resplit_datasets=cli.resplit_datasets,
+          resplit_n_per_agent=cli.resplit_n_per_agent)
