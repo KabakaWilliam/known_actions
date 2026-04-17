@@ -96,6 +96,17 @@ agents:
       MIDSCENE_MODEL_REASONING_ENABLED: "false"
       MIDSCENE_REPLANNING_CYCLE_LIMIT:  "40"
 
+  - agent_id: qwen3_5_9b
+    display_name: "Qwen3.5-9B"
+    source: open
+    env:
+      MIDSCENE_MODEL_NAME:              "Qwen/Qwen3.5-9B"
+      MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"
+      MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3031/v1"
+      MIDSCENE_MODEL_FAMILY:            "qwen3.5"
+      MIDSCENE_MODEL_REASONING_ENABLED: "false"
+      MIDSCENE_REPLANNING_CYCLE_LIMIT:  "40"
+
   - agent_id: uitars_7b
     display_name: "UI-TARS-1.5-7B"
     source: open
@@ -144,8 +155,8 @@ agents:
       MIDSCENE_MODEL_BASE_URL: "https://api.openai.com/v1"
       MIDSCENE_MODEL_FAMILY:   "gpt-5"
 
-  - agent_id: claude_haiku_4_6
-    display_name: "Claude Haiku 4.6"
+  - agent_id: claude_haiku_4_5
+    display_name: "Claude Haiku 4.5"
     source: proprietary
     env:
       MIDSCENE_MODEL_NAME:     "claude-haiku-4-5-20251001"
@@ -184,10 +195,21 @@ agents:
     display_name: "Gemini-3-Flash"
     source: proprietary
     env:
-      MIDSCENE_MODEL_NAME:     "gemini-3-flash"
+      MIDSCENE_MODEL_NAME:     "gemini-3-flash-preview"
       MIDSCENE_MODEL_API_KEY:  "$GOOGLE_API_KEY"
       MIDSCENE_MODEL_BASE_URL: "https://generativelanguage.googleapis.com/v1beta/openai"
       MIDSCENE_MODEL_FAMILY:   "gemini"
+
+  # --- OpenRouter models ---
+
+  - agent_id: seed_2_lite
+    display_name: "Seed-2.0-Lite"
+    source: proprietary
+    env:
+      MIDSCENE_MODEL_NAME:     "bytedance-seed/seed-2.0-lite"
+      MIDSCENE_MODEL_API_KEY:  "$OPEN_ROUTER_API_KEY"
+      MIDSCENE_MODEL_BASE_URL: "https://openrouter.ai/api/v1"
+      MIDSCENE_MODEL_FAMILY:   "doubao-seed"
 
 # =============================================================================
 # Dataset loader registry

@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import classification_report
+from sklearn.metrics import classification_report, roc_auc_score
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 try:
@@ -48,9 +48,14 @@ def _type_ieis(events, event_type) -> list[float]:
     return np.diff(ts).tolist() if len(ts) > 1 else [0.0]
 
 
-def extract_features(episode) -> dict:
+def extract_features(episode, n_events: int | None = None,
+                     t_max_ms: int | None = None) -> dict:
     dom    = episode.get("dom_trace", {})
     events = dom.get("events", [])
+    if t_max_ms is not None:
+        events = [e for e in events if (e.get("t_episode") or e.get("t") or 0) <= t_max_ms]
+    if n_events is not None:
+        events = events[:n_events]
     mlog   = episode.get("midscene_log", [])
 
     clicks       = [e for e in events if e["type"] == "click"]
@@ -214,7 +219,8 @@ def extract_features(episode) -> dict:
     }
 
 
-def extract_sequence(episode) -> list[tuple[int, float, float, float, float, float]]:
+def extract_sequence(episode, n_events: int | None = None,
+                     t_max_ms: int | None = None) -> list[tuple[int, float, float, float, float, float]]:
     """Return a list of (token_id, f0, f1, f2, f3, f4) per event.
 
     f0 = log1p(delta_t_ms)        — inter-event gap
@@ -228,6 +234,10 @@ def extract_sequence(episode) -> list[tuple[int, float, float, float, float, flo
           without having to implicitly isolate event types from the mixed sequence
     """
     events = episode.get("dom_trace", {}).get("events", [])
+    if t_max_ms is not None:
+        events = [e for e in events if (e.get("t_episode") or e.get("t") or 0) <= t_max_ms]
+    if n_events is not None:
+        events = events[:n_events]
     result  = []
     prev_t  = None
     # Running per-type IEI accumulators: {type: (sum_ieis, count)}
@@ -269,10 +279,12 @@ def load_dataset(trace_dir: Path,
                  train_datasets: list[str] | None = None,
                  ood_datasets: list[str] | None = None,
                  agents: list[str] | None = None,
+                 open_set_agents: list[str] | None = None,
                  resplit_datasets: list[str] | None = None,
                  resplit_fracs: tuple[float, float, float] = (0.5, 0.25, 0.25),
                  resplit_seed: int = 42,
                  resplit_n_per_agent: int | None = None,
+                 return_events: bool = False,
                  ) -> tuple[dict[str, tuple], dict[str, set]]:
     """Load all episode traces, bucketed by split.
 
@@ -298,20 +310,24 @@ def load_dataset(trace_dir: Path,
       datasets, split by suffix.
 
     Returns (splits, ds_names) where:
-      splits   = {"train": (features, sequences, labels, ds_bases), "val": ..., ...}
+      splits   = {"train": (features, sequences, labels, ds_bases[, raw_events]), "val": ..., ...}
         ds_bases is a list of base dataset names (one per episode), used for per-OOD-dataset eval
+        raw_events is included only when return_events=True
       ds_names = {"train": {"2wikimultihop_train", ...}, "val": ..., ...}
     """
-    resplit_datasets = set(resplit_datasets or [])
-    buckets: dict[str, tuple[list, list, list, list]] = {
-        "train": ([], [], [], []),
-        "val":   ([], [], [], []),
-        "test":  ([], [], [], []),
-        "ood":   ([], [], [], []),
+    resplit_datasets  = set(resplit_datasets or [])
+    _open_set_agents  = set(open_set_agents or [])
+    buckets: dict[str, tuple[list, list, list, list, list]] = {
+        "train":    ([], [], [], [], []),
+        "val":      ([], [], [], [], []),
+        "test":     ([], [], [], [], []),
+        "ood":      ([], [], [], [], []),
+        "open_set": ([], [], [], [], []),
     }
-    ds_names: dict[str, set] = {"train": set(), "val": set(), "test": set(), "ood": set()}
+    ds_names: dict[str, set] = {"train": set(), "val": set(), "test": set(),
+                                 "ood": set(), "open_set": set()}
     # staging pool for datasets that need a post-hoc stratified split
-    resplit_pool: list[tuple] = []  # (feat, seq, label, base, dataset_name)
+    resplit_pool: list[tuple] = []  # (feat, seq, label, base, dataset_name, raw_events)
 
     for path in sorted(trace_dir.rglob("*.json")):
         rel_parts = path.relative_to(trace_dir).parts
@@ -321,6 +337,32 @@ def load_dataset(trace_dir: Path,
             warnings.warn(f"Skipping {path}: unexpected path depth")
             continue
         agent_id = rel_parts[0]
+        # Open-set agents are routed to the "open_set" bucket; they are never trained on.
+        # Apply the same dataset filter as for known agents so open-set traces come from
+        # the same domain (e.g. 2wikimultihop only, not frames/webshop/webgames).
+        if agent_id in _open_set_agents:
+            dataset_name = rel_parts[1]
+            base = dataset_name.rsplit("_", 1)[0]
+            # Skip if this dataset is outside the configured train/ood scope
+            if train_datasets is not None and base not in train_datasets:
+                if ood_datasets is None or base not in ood_datasets:
+                    continue
+            try:
+                with open(path) as f:
+                    episode = json.load(f)
+                feat       = extract_features(episode)
+                seq        = extract_sequence(episode)
+                lbl        = episode["meta"]["agent_id"]
+                raw_events = episode.get("dom_trace", {}).get("events", [])
+                buckets["open_set"][0].append(feat)
+                buckets["open_set"][1].append(seq)
+                buckets["open_set"][2].append(lbl)
+                buckets["open_set"][3].append(base)
+                buckets["open_set"][4].append(raw_events)
+                ds_names["open_set"].add(dataset_name)
+            except Exception as e:
+                warnings.warn(f"Skipping {path.name}: {e}")
+            continue
         if agents is not None and agent_id not in agents:
             continue
         dataset_name = rel_parts[1]
@@ -331,8 +373,8 @@ def load_dataset(trace_dir: Path,
             split = "ood"
         elif train_datasets is not None and base in train_datasets:
             split = _infer_split(dataset_name)
-            if split is None or split == "ood":
-                continue  # skip _ood-suffixed dirs when using explicit train list
+            if split is None or (split == "ood" and base not in resplit_datasets):
+                continue  # skip _ood-suffixed dirs unless dataset is being resplit
         elif train_datasets is None and ood_datasets is None:
             # Legacy: accept all datasets, bucket by suffix
             split = _infer_split(dataset_name)
@@ -344,16 +386,18 @@ def load_dataset(trace_dir: Path,
         try:
             with open(path) as f:
                 episode = json.load(f)
-            feat = extract_features(episode)
-            seq  = extract_sequence(episode)
-            lbl  = episode["meta"]["agent_id"]
+            feat       = extract_features(episode)
+            seq        = extract_sequence(episode)
+            lbl        = episode["meta"]["agent_id"]
+            raw_events = episode.get("dom_trace", {}).get("events", [])
             if base in resplit_datasets:
-                resplit_pool.append((feat, seq, lbl, base, dataset_name))
+                resplit_pool.append((feat, seq, lbl, base, dataset_name, raw_events))
             else:
                 buckets[split][0].append(feat)
                 buckets[split][1].append(seq)
                 buckets[split][2].append(lbl)
                 buckets[split][3].append(base)
+                buckets[split][4].append(raw_events)
                 ds_names[split].add(dataset_name)
         except Exception as e:
             warnings.warn(f"Skipping {path.name}: {e}")
@@ -378,14 +422,18 @@ def load_dataset(trace_dir: Path,
                 [("val",   i) for i in agent_items[n_train:n_train + n_val]] +
                 [("test",  i) for i in agent_items[n_train + n_val:]]
             )
-            for dest, (feat, seq, lbl, base, dataset_name) in assignments:
+            for dest, (feat, seq, lbl, base, dataset_name, raw_events) in assignments:
                 buckets[dest][0].append(feat)
                 buckets[dest][1].append(seq)
                 buckets[dest][2].append(lbl)
                 buckets[dest][3].append(base)
+                buckets[dest][4].append(raw_events)
                 ds_names[dest].add(dataset_name)
 
-    return {s: tuple(lists) for s, lists in buckets.items()}, ds_names
+    if return_events:
+        return {s: tuple(lists) for s, lists in buckets.items()}, ds_names
+    # Always return 4-tuples (drop raw_events), but keep "open_set" in the dict
+    return {s: tuple(lists[:4]) for s, lists in buckets.items()}, ds_names
 
 
 class SequenceDataset(Dataset):
@@ -411,6 +459,9 @@ def collate_fn(batch):
     lengths      = torch.tensor([t.size(0) for t in toks], dtype=torch.long)
     padded_toks  = pad_sequence(toks,  batch_first=True, padding_value=0)
     padded_times = pad_sequence(times, batch_first=True, padding_value=0.0)  # (B, T, _N_CONTINUOUS)
+    # pack_padded_sequence rejects length-0 entries (can occur at tiny prefix sizes);
+    # clamp to 1 so empty sequences are treated as a single all-zero event.
+    lengths      = lengths.clamp(min=1)
     rf_batch     = torch.stack(rfs)                                           # (B, n_rf)
     return padded_toks, padded_times, lengths, rf_batch, torch.stack(lbls)
 
@@ -467,7 +518,10 @@ _LSTM_GRID = [
 def _make_tensors(sequences):
     """Unpack list of (token, f0..f4) tuples into tok and time tensors."""
     tok_tensors  = [torch.tensor([e[0] for e in s], dtype=torch.long) for s in sequences]
-    time_tensors = [torch.tensor([[e[1], e[2], e[3], e[4], e[5]] for e in s], dtype=torch.float)
+    # reshape(-1, _N_CONTINUOUS) ensures shape (T, 5) even when T==0 (empty prefix),
+    # which pad_sequence requires to infer the feature dimension.
+    time_tensors = [torch.tensor([[e[1], e[2], e[3], e[4], e[5]] for e in s], dtype=torch.float
+                                 ).reshape(-1, _N_CONTINUOUS)
                     for s in sequences]
     return tok_tensors, time_tensors
 
@@ -504,8 +558,12 @@ def _fit_lstm(seq_train, X_train, y_train, n_classes, hyperparams, n_epochs=_LST
     return model
 
 
-def _eval_lstm(model, seq_eval, X_eval, y_eval):
-    """Evaluate a trained AgentLSTM. Returns (accuracy, predictions_list)."""
+def _eval_lstm(model, seq_eval, X_eval, y_eval, return_proba: bool = False):
+    """Evaluate a trained AgentLSTM.
+
+    Returns (accuracy, predictions_list) by default.
+    When return_proba=True, returns (accuracy, predictions_list, max_softmax_scores_list).
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     tok_tensors, time_tensors = _make_tensors(seq_eval)
     rf_tensors = [torch.tensor(X_eval[i], dtype=torch.float) for i in range(len(X_eval))]
@@ -514,7 +572,7 @@ def _eval_lstm(model, seq_eval, X_eval, y_eval):
                     batch_size=_LSTM_BATCH_SIZE, shuffle=False, collate_fn=collate_fn)
 
     model.eval()
-    all_preds, all_trues = [], []
+    all_preds, all_trues, all_confs = [], [], []
     with torch.no_grad():
         for p_toks, p_times, lengths, rf_batch, lbls in dl:
             p_toks   = p_toks.to(device)
@@ -522,11 +580,17 @@ def _eval_lstm(model, seq_eval, X_eval, y_eval):
             lengths  = lengths.to(device)
             rf_batch = rf_batch.to(device)
             lbls     = lbls.to(device)
-            preds = model(p_toks, p_times, lengths, rf_batch).argmax(dim=1)
+            logits   = model(p_toks, p_times, lengths, rf_batch)
+            preds    = logits.argmax(dim=1)
+            if return_proba:
+                confs = torch.nn.functional.softmax(logits, dim=1).max(dim=1).values
+                all_confs.extend(confs.cpu().tolist())
             all_preds.extend(preds.cpu().tolist())
             all_trues.extend(lbls.cpu().tolist())
 
     acc = sum(p == t for p, t in zip(all_preds, all_trues)) / len(all_trues)
+    if return_proba:
+        return float(acc), all_preds, all_confs
     return float(acc), all_preds
 
 
@@ -586,21 +650,301 @@ LR_PARAM_GRID = {
     "C": [0.01, 0.1, 1.0, 10.0],
 }
 
+_PREFIX_SIZES_EVENTS = [5, 10, 20, 30, 50, 75, 100, 150, None]
+_PREFIX_SIZES_MS     = [1000, 2000, 5000, 10000, 20000, 30000, None]
+
+
+def eval_prefix_curve(
+    trained_clfs: dict,
+    lstm_model,
+    raw_events_test: list,
+    raw_events_ood:  list,
+    lbl_test: list,
+    lbl_ood:  list,
+    ds_bases_ood: list,
+    le,
+    feat_names: list,
+    scaler,
+    prefix_sizes_events=None,
+    prefix_sizes_ms=None,
+) -> dict:
+    """Evaluate all classifiers at truncated trace prefixes.
+
+    Trains on full traces (already done); here we only re-extract features and
+    sequences at each prefix size and run inference to measure how quickly the
+    models can identify each agent.
+
+    Returns a nested dict suitable for JSON serialisation under 'prefix_curve'.
+    """
+    if prefix_sizes_events is None:
+        prefix_sizes_events = _PREFIX_SIZES_EVENTS
+    if prefix_sizes_ms is None:
+        prefix_sizes_ms = _PREFIX_SIZES_MS
+
+    y_test = le.transform(lbl_test) if lbl_test else np.array([], dtype=int)
+    y_ood  = le.transform(lbl_ood)  if lbl_ood  else np.array([], dtype=int)
+    ds_bases_ood_arr = np.array(ds_bases_ood)
+    ood_base_names   = sorted(set(ds_bases_ood))
+
+    # Classifiers that were trained on unscaled features (RF, XGBoost are scale-invariant)
+    _UNSCALED_CLFS = {"RandomForest", "XGBoost"}
+
+    def _fake_ep(raw_ev):
+        return {"dom_trace": {"events": raw_ev}}
+
+    def _build_X(raw_ev_list, n_ev=None, t_ms=None):
+        """Return unscaled feature matrix."""
+        feats = [extract_features(_fake_ep(ev), n_events=n_ev, t_max_ms=t_ms)
+                 for ev in raw_ev_list]
+        return np.array([[f.get(k, 0.0) for k in feat_names] for f in feats])
+
+    def _build_Xs(raw_ev_list, n_ev=None, t_ms=None):
+        """Return scaler-transformed feature matrix (for LR, LSTM)."""
+        return scaler.transform(_build_X(raw_ev_list, n_ev=n_ev, t_ms=t_ms))
+
+    def _build_seqs(raw_ev_list, n_ev=None, t_ms=None):
+        return [extract_sequence(_fake_ep(ev), n_events=n_ev, t_max_ms=t_ms)
+                for ev in raw_ev_list]
+
+    def _per_class_f1(report):
+        return {cls: report.get(cls, {}).get("f1-score", 0.0)
+                for cls in le.classes_}
+
+    def _macro_f1(per_class: dict) -> float:
+        vals = list(per_class.values())
+        return float(np.mean(vals)) if vals else 0.0
+
+    def _split_report(y_true, preds):
+        rep = classification_report(y_true, preds, target_names=le.classes_,
+                                    output_dict=True, zero_division=0)
+        pcf = _per_class_f1(rep)
+        return {"accuracy": rep["accuracy"],
+                "macro_f1": _macro_f1(pcf),
+                "per_class_f1": pcf}
+
+    def _eval_one(size_key, X_te, Xs_te, seqs_te, X_od, Xs_od, seqs_od):
+        result = {}
+        for clf_name, clf in trained_clfs.items():
+            if clf is None:
+                continue
+            # RF/XGBoost trained on raw features; LR trained on scaled features
+            Xtr_te = X_te  if clf_name in _UNSCALED_CLFS else Xs_te
+            Xtr_od = X_od  if clf_name in _UNSCALED_CLFS else Xs_od
+            entry = {}
+            if len(Xtr_te):
+                entry["test"] = _split_report(y_test, clf.predict(Xtr_te))
+            ood_entry = {}
+            for oname in ood_base_names:
+                mask     = ds_bases_ood_arr == oname
+                Xs_sub   = Xtr_od[mask]
+                y_sub    = y_ood[mask]
+                if not len(Xs_sub):
+                    continue
+                ood_entry[oname] = _split_report(y_sub, clf.predict(Xs_sub))
+            entry["ood"] = ood_entry
+            result[clf_name] = entry
+
+        # LSTM uses scaled features
+        if lstm_model is not None and len(seqs_te):
+            _, preds_te = _eval_lstm(lstm_model, seqs_te, Xs_te, list(y_test))
+            lstm_entry  = {"test": _split_report(list(y_test), preds_te)}
+            lstm_ood    = {}
+            for oname in ood_base_names:
+                mask        = ds_bases_ood_arr == oname
+                seqs_sub    = [s for s, m in zip(seqs_od, mask) if m]
+                Xs_sub      = Xs_od[mask]
+                y_sub       = [int(v) for v, m in zip(y_ood.tolist(), mask) if m]
+                if not seqs_sub:
+                    continue
+                _, preds_od = _eval_lstm(lstm_model, seqs_sub, Xs_sub, y_sub)
+                lstm_ood[oname] = _split_report(y_sub, preds_od)
+            lstm_entry["ood"] = lstm_ood
+            result["LSTM"] = lstm_entry
+        return result
+
+    curve: dict = {"n_events": {}, "t_ms": {}}
+
+    # ── n_events sweep ──────────────────────────────────────────────────────
+    print("  prefix curve — n_events:", end="", flush=True)
+    for size in prefix_sizes_events:
+        key = str(size) if size is not None else "null"
+        print(f" {key}", end="", flush=True)
+        n_ev    = size
+        X_te    = _build_X (raw_events_test, n_ev=n_ev)
+        Xs_te   = _build_Xs(raw_events_test, n_ev=n_ev)
+        seqs_te = _build_seqs(raw_events_test, n_ev=n_ev)
+        X_od    = _build_X (raw_events_ood, n_ev=n_ev)
+        Xs_od   = _build_Xs(raw_events_ood, n_ev=n_ev)
+        seqs_od = _build_seqs(raw_events_ood, n_ev=n_ev)
+        per_clf = _eval_one(key, X_te, Xs_te, seqs_te, X_od, Xs_od, seqs_od)
+        for clf_name, entry in per_clf.items():
+            curve["n_events"].setdefault(clf_name, {})[key] = entry
+    print()
+
+    # ── t_ms sweep ──────────────────────────────────────────────────────────
+    print("  prefix curve — t_ms:", end="", flush=True)
+    for size in prefix_sizes_ms:
+        key = str(size) if size is not None else "null"
+        print(f" {key}", end="", flush=True)
+        t_ms    = size
+        X_te    = _build_X (raw_events_test, t_ms=t_ms)
+        Xs_te   = _build_Xs(raw_events_test, t_ms=t_ms)
+        seqs_te = _build_seqs(raw_events_test, t_ms=t_ms)
+        X_od    = _build_X (raw_events_ood, t_ms=t_ms)
+        Xs_od   = _build_Xs(raw_events_ood, t_ms=t_ms)
+        seqs_od = _build_seqs(raw_events_ood, t_ms=t_ms)
+        per_clf = _eval_one(key, X_te, Xs_te, seqs_te, X_od, Xs_od, seqs_od)
+        for clf_name, entry in per_clf.items():
+            curve["t_ms"].setdefault(clf_name, {})[key] = entry
+    print()
+
+    return curve
+
+
+def eval_open_set(
+    trained_clfs: dict,
+    lstm_model,
+    X_known: np.ndarray,    # unscaled (for RF/XGBoost)
+    Xs_known: np.ndarray,   # scaler-transformed (for LR/LSTM)
+    X_unknown: np.ndarray,
+    Xs_unknown: np.ndarray,
+    seqs_known: list,
+    seqs_unknown: list,
+    y_known: np.ndarray,
+    le,
+    open_set_agent_names: list[str],
+) -> dict:
+    """Measure how well each classifier can distinguish known agents from unknown ones.
+
+    Classifiers are trained on known agents only. At eval time we mix their test
+    traces with traces from the held-out unknown agents and report:
+      - AUROC  — area under the ROC curve for in-set (1) vs out-of-set (0); threshold-independent
+      - FPR95  — false positive rate at TPR=0.95 (standard OOD benchmark)
+      - binary_report — precision/recall/F1 at the Youden threshold (maximises TPR−FPR)
+      - closed_set_accuracy — accuracy on known agents (unknowns excluded)
+      - open_set_accuracy   — accuracy when samples below the FPR95 threshold are rejected
+
+    Confidence signal: max(softmax) / max(predict_proba) — higher = more confident
+    the model believes the trace belongs to a known class.
+    """
+    from sklearn.metrics import roc_curve
+
+    n_known   = len(X_known)
+    n_unknown = len(X_unknown)
+    if n_known == 0 or n_unknown == 0:
+        return {}
+
+    # Binary ground truth: 1 = known (in-set), 0 = unknown (out-of-set)
+    in_labels = np.array([1] * n_known + [0] * n_unknown)
+
+    def _fpr_at_tpr(fprs, tprs, target_tpr=0.95):
+        for fpr, tpr in zip(fprs, tprs):
+            if tpr >= target_tpr:
+                return float(fpr)
+        return 1.0
+
+    def _youden_threshold(fprs, tprs, thresholds):
+        """Threshold that maximises Youden's J = TPR − FPR (balanced binary F1 proxy)."""
+        j_scores = tprs - fprs
+        best_idx = int(np.argmax(j_scores))
+        return float(thresholds[best_idx])
+
+    def _binary_report(conf_known, conf_unknown, threshold):
+        """Binary classification report: known (1) vs unknown (0) at a given threshold."""
+        y_true = [1] * len(conf_known) + [0] * len(conf_unknown)
+        y_pred = [1 if s >= threshold else 0 for s in list(conf_known) + list(conf_unknown)]
+        rep = classification_report(y_true, y_pred,
+                                    target_names=["unknown", "known"],
+                                    output_dict=True, zero_division=0)
+        return {
+            "accuracy":       rep["accuracy"],
+            "known_precision":   rep["known"]["precision"],
+            "known_recall":      rep["known"]["recall"],
+            "known_f1":          rep["known"]["f1-score"],
+            "unknown_precision": rep["unknown"]["precision"],
+            "unknown_recall":    rep["unknown"]["recall"],
+            "unknown_f1":        rep["unknown"]["f1-score"],
+            "macro_f1":          rep["macro avg"]["f1-score"],
+        }
+
+    result = {}
+
+    def _package(auroc, fpr95, threshold, bin_rep):
+        return {
+            "auroc":            auroc,
+            "fpr95":            fpr95,
+            "youden_threshold": threshold,
+            "binary_report":    bin_rep,
+            "n_known":          n_known,
+            "n_unknown":        n_unknown,
+        }
+
+    # ── sklearn classifiers ───────────────────────────────────────────────────
+    # RF/XGBoost trained on unscaled features; LR trained on scaled features.
+    _UNSCALED = {"RandomForest", "XGBoost"}
+    for clf_name, clf in trained_clfs.items():
+        if clf is None:
+            continue
+        Xk = X_known   if clf_name in _UNSCALED else Xs_known
+        Xu = X_unknown if clf_name in _UNSCALED else Xs_unknown
+        conf_known   = clf.predict_proba(Xk).max(axis=1)
+        conf_unknown = clf.predict_proba(Xu).max(axis=1)
+        scores       = np.concatenate([conf_known, conf_unknown])
+
+        auroc                    = float(roc_auc_score(in_labels, scores))
+        fprs, tprs, thresholds   = roc_curve(in_labels, scores, pos_label=1)
+        fpr95                    = _fpr_at_tpr(fprs, tprs)
+        threshold                = _youden_threshold(fprs, tprs, thresholds)
+        result[clf_name]         = _package(auroc, fpr95, threshold,
+                                            _binary_report(conf_known, conf_unknown, threshold))
+
+    # ── LSTM ──────────────────────────────────────────────────────────────────
+    if lstm_model is not None:
+        dummy_y = np.zeros(n_unknown, dtype=int)
+        _, _, conf_known   = _eval_lstm(lstm_model, seqs_known,   Xs_known,   list(y_known), return_proba=True)
+        _, _, conf_unknown = _eval_lstm(lstm_model, seqs_unknown, Xs_unknown, list(dummy_y), return_proba=True)
+
+        conf_known_arr   = np.array(conf_known)
+        conf_unknown_arr = np.array(conf_unknown)
+        scores           = np.concatenate([conf_known_arr, conf_unknown_arr])
+
+        auroc                  = float(roc_auc_score(in_labels, scores))
+        fprs, tprs, thresholds = roc_curve(in_labels, scores, pos_label=1)
+        fpr95                  = _fpr_at_tpr(fprs, tprs)
+        threshold              = _youden_threshold(fprs, tprs, thresholds)
+        result["LSTM"]         = _package(auroc, fpr95, threshold,
+                                          _binary_report(conf_known_arr, conf_unknown_arr, threshold))
+
+    return result
+
 
 def train(trace_dir: Path, tag: str | None = None,
           train_datasets: list[str] | None = None,
           ood_datasets: list[str] | None = None,
           agents: list[str] | None = None,
+          open_set_agents: list[str] | None = None,
           resplit_datasets: list[str] | None = None,
-          resplit_n_per_agent: int | None = None) -> None:
+          resplit_n_per_agent: int | None = None,
+          prefix_eval: bool = False) -> None:
     splits, ds_names = load_dataset(trace_dir, train_datasets=train_datasets,
                                     ood_datasets=ood_datasets, agents=agents,
+                                    open_set_agents=open_set_agents,
                                     resplit_datasets=resplit_datasets,
-                                    resplit_n_per_agent=resplit_n_per_agent)
-    feat_train, seq_train, lbl_train, _           = splits["train"]
-    feat_val,   seq_val,   lbl_val,   _           = splits["val"]
-    feat_test,  seq_test,  lbl_test,  _           = splits["test"]
-    feat_ood,   seq_ood,   lbl_ood,   ds_bases_ood = splits["ood"]
+                                    resplit_n_per_agent=resplit_n_per_agent,
+                                    return_events=prefix_eval)
+    if prefix_eval:
+        feat_train, seq_train, lbl_train, _,            *_ = splits["train"]
+        feat_val,   seq_val,   lbl_val,   _,            *_ = splits["val"]
+        feat_test, seq_test, lbl_test, _,            raw_events_test = splits["test"]
+        feat_ood,  seq_ood,  lbl_ood,  ds_bases_ood, raw_events_ood  = splits["ood"]
+    else:
+        feat_train, seq_train, lbl_train, _            = splits["train"]
+        feat_val,   seq_val,   lbl_val,   _            = splits["val"]
+        feat_test, seq_test, lbl_test, _             = splits["test"]
+        feat_ood,  seq_ood,  lbl_ood,  ds_bases_ood  = splits["ood"]
+        raw_events_test = raw_events_ood = None
+    # Open-set split: slice [:4] so this is safe whether return_events is on or off
+    feat_os, seq_os, lbl_os, _ = splits["open_set"][:4]
 
     # --- guards ---
     if not feat_train:
@@ -644,6 +988,18 @@ def train(trace_dir: Path, tag: str | None = None,
     Xs_val    = scaler.transform(X_val)  if has_val  else X_val
     Xs_test   = scaler.transform(X_test) if has_test else X_test
     Xs_ood    = scaler.transform(X_ood)  if has_ood  else X_ood
+
+    # Pre-compute open-set arrays so we can print per-classifier AUROC inline
+    _os_ready = bool(open_set_agents and feat_os and feat_test)
+    if _os_ready:
+        _X_os_raw  = to_X(feat_os)
+        _X_os_scl  = scaler.transform(_X_os_raw)
+        _X_te_raw  = to_X(feat_test)
+        _X_te_scl  = scaler.transform(_X_te_raw)
+        _y_te_enc  = le.transform(lbl_test)
+        # Binary labels: known=1, unknown=0
+        _in_labels = np.concatenate([np.ones(len(_y_te_enc)),
+                                     np.zeros(len(feat_os))])
 
     # --- derive models_dir from train-split dataset base names (or --tag override) ---
     if tag is None:
@@ -714,7 +1070,16 @@ def train(trace_dir: Path, tag: str | None = None,
             test_preds  = best_clf.predict(Xte)
             test_report = classification_report(
                 y_test, test_preds, target_names=le.classes_, output_dict=True)
-            print(f"{name:20s}  test_acc={test_report['accuracy']:.3f}")
+            _auroc_str = ""
+            if _os_ready and hasattr(best_clf, "predict_proba"):
+                _Xte_os = _X_te_scl if scaled else _X_te_raw
+                _Xos_os = _X_os_scl if scaled else _X_os_raw
+                _scores  = np.concatenate([
+                    best_clf.predict_proba(_Xte_os).max(axis=1),
+                    best_clf.predict_proba(_Xos_os).max(axis=1),
+                ])
+                _auroc_str = f"  auroc={roc_auc_score(_in_labels, _scores):.3f}"
+            print(f"{name:20s}  test_acc={test_report['accuracy']:.3f}{_auroc_str}")
 
         ood_reports = {}
         for oname in ood_base_names:
@@ -732,9 +1097,10 @@ def train(trace_dir: Path, tag: str | None = None,
             "test_report": test_report,
             "ood_reports": ood_reports,
         }
-        if name == "RandomForest": best_rf    = best_clf
-        if name == "XGBoost":      best_xgb   = best_clf
-        if name == "LR_L2":        best_lr_l2 = best_clf
+        if name == "RandomForest": best_rf       = best_clf
+        if name == "XGBoost":      best_xgb      = best_clf
+        if name == "LR_L2":        best_lr_l2    = best_clf
+        if name == "LR_Lasso":     best_lr_lasso = best_clf
 
     importances = sorted(zip(feat_names, best_rf.feature_importances_), key=lambda x: -x[1])
     print("\nTop 10 features (Random Forest):")
@@ -765,6 +1131,7 @@ def train(trace_dir: Path, tag: str | None = None,
                 out[k] = v
         return out
 
+    final_lstm_model = None   # set in both has_val and else branches below
     print("\nTraining LSTM ...")
     n_classes = len(le.classes_)
     if has_val:
@@ -779,12 +1146,22 @@ def train(trace_dir: Path, tag: str | None = None,
         if lstm_result["val_report"]:
             print(f"{'LSTM':20s}  val_acc={lstm_result['val_report']['accuracy']:.3f}")
         if lstm_result["test_report"]:
-            print(f"{'LSTM':20s}  test_acc={lstm_result['test_report']['accuracy']:.3f}")
-        # OOD eval reuses the final trained model saved in train_lstm
+            _lstm_auroc_str = ""
+            if _os_ready and final_lstm_model is not None:
+                _, _, _lstm_confs_te = _eval_lstm(
+                    final_lstm_model, seq_test, _X_te_scl, _y_te_enc, return_proba=True)
+                _, _, _lstm_confs_os = _eval_lstm(
+                    final_lstm_model, seq_os, _X_os_scl,
+                    np.zeros(len(seq_os), dtype=int), return_proba=True)
+                _lstm_scores = np.concatenate([_lstm_confs_te, _lstm_confs_os])
+                _lstm_auroc_str = f"  auroc={roc_auc_score(_in_labels, _lstm_scores):.3f}"
+            print(f"{'LSTM':20s}  test_acc={lstm_result['test_report']['accuracy']:.3f}{_lstm_auroc_str}")
+        # OOD / open-set eval needs a final model trained on full train set (not val-split model)
         lstm_ood_reports = {}
-        if has_ood:
+        if has_ood or (open_set_agents and feat_os):
             final_model = _fit_lstm(seq_train, Xs_train, list(y_train), n_classes,
                                     lstm_result["best_params"])
+            final_lstm_model = final_model
             for oname in ood_base_names:
                 mask = ds_bases_ood_arr == oname
                 seq_ood_sub = [s for s, m in zip(seq_ood, mask) if m]
@@ -796,8 +1173,9 @@ def train(trace_dir: Path, tag: str | None = None,
                 print(f"{'LSTM':20s}  ood[{oname}]_acc={lstm_ood_reports[oname]['accuracy']:.3f}")
         lstm_result["ood_reports"] = lstm_ood_reports
     else:
-        default_params = {"hidden_dim": 64, "dropout": 0.3}
-        model          = _fit_lstm(seq_train, Xs_train, list(y_train), n_classes, default_params)
+        default_params   = {"hidden_dim": 64, "dropout": 0.3}
+        model            = _fit_lstm(seq_train, Xs_train, list(y_train), n_classes, default_params)
+        final_lstm_model = model
         test_report    = None
         if has_test:
             _, test_preds = _eval_lstm(model, seq_test, Xs_test, list(y_test))
@@ -818,6 +1196,78 @@ def train(trace_dir: Path, tag: str | None = None,
                        "test_report": test_report, "ood_reports": lstm_ood_reports}
 
     clf_results["LSTM"] = lstm_result
+
+    # --- prefix curve (early identification analysis) ---
+    prefix_curve = None
+    if prefix_eval and raw_events_test:
+        print("\nRunning early-identification prefix curve analysis ...")
+        prefix_curve = eval_prefix_curve(
+            trained_clfs={
+                "RandomForest": best_rf,
+                "XGBoost":      best_xgb,
+                "LR_L2":        best_lr_l2,
+                "LR_Lasso":     best_lr_lasso,
+            },
+            lstm_model=final_lstm_model,
+            raw_events_test=list(raw_events_test),
+            raw_events_ood=list(raw_events_ood) if raw_events_ood else [],
+            lbl_test=lbl_test,
+            lbl_ood=lbl_ood,
+            ds_bases_ood=list(ds_bases_ood),
+            le=le,
+            feat_names=feat_names,
+            scaler=scaler,
+        )
+
+    # --- open-set evaluation ---
+    open_set_result = None
+    if open_set_agents and feat_os:
+        print("\nRunning open-set recognition evaluation ...")
+        # Raw (unscaled) features for RF/XGBoost; scaled for LR/LSTM
+        X_os_raw  = to_X(feat_os)
+        X_os_scl  = scaler.transform(X_os_raw)
+        X_te_raw  = to_X(feat_test)  if feat_test else np.empty((0, len(feat_names)))
+        X_te_scl  = scaler.transform(X_te_raw) if feat_test else X_te_raw
+        y_te_os   = le.transform(lbl_test) if lbl_test else np.array([], dtype=int)
+        open_set_result = eval_open_set(
+            trained_clfs={
+                "RandomForest": best_rf,
+                "XGBoost":      best_xgb,
+                "LR_L2":        best_lr_l2,
+                "LR_Lasso":     best_lr_lasso,
+            },
+            lstm_model=final_lstm_model,
+            X_known=X_te_raw,
+            Xs_known=X_te_scl,
+            X_unknown=X_os_raw,
+            Xs_unknown=X_os_scl,
+            seqs_known=seq_test,
+            seqs_unknown=seq_os,
+            y_known=y_te_os,
+            le=le,
+            open_set_agent_names=lbl_os,
+        )
+        # Print open-set summary — this is the primary result in this mode
+        unknown_str = ", ".join(sorted(set(lbl_os)))
+        print(f"\n{'─' * 62}")
+        print(f"  Open-set recognition  [unknown: {unknown_str}]")
+        print(f"  known n={len(y_te_os)}  unknown n={len(lbl_os)}")
+        print(f"{'─' * 62}")
+        print(f"  {'Classifier':20s}  {'test-acc':>8}  {'AUROC':>6}  {'FPR95':>6}  "
+              f"{'known-F1':>9}  {'unk-F1':>7}  {'macro-F1':>9}")
+        print()
+        for clf_name, res in open_set_result.items():
+            br = res.get("binary_report", {})
+            # Retrieve test accuracy from the closed-set report (LSTM lives in lstm_result)
+            if clf_name == "LSTM":
+                _tr = (lstm_result.get("test_report") or {})
+            else:
+                _tr = (clf_results.get(clf_name, {}).get("test_report") or {})
+            test_acc_str = f"{_tr.get('accuracy', float('nan')):8.3f}" if _tr else "     n/a"
+            print(f"  {clf_name:20s}  {test_acc_str}  {res['auroc']:6.3f}  {res['fpr95']:6.3f}  "
+                  f"  {br.get('known_f1', 0):7.3f}  {br.get('unknown_f1', 0):7.3f}"
+                  f"  {br.get('macro_f1', 0):9.3f}")
+        print()
 
     # --- save artefacts ---
     with open(models_dir / "classifier.pkl", "wb") as f:
@@ -840,7 +1290,14 @@ def train(trace_dir: Path, tag: str | None = None,
         "n_episodes":     {"train": len(feat_train), "val": len(feat_val),
                            "test": len(feat_test), "ood": len(feat_ood)},
         "class_names":    list(le.classes_),
+        # mean trace length (n DOM events) per split — used by plot_early_id.py
+        "mean_n_events":  {
+            "test": float(np.mean([f["n_events_total"] for f in feat_test])) if feat_test else None,
+            "ood":  float(np.mean([f["n_events_total"] for f in feat_ood]))  if feat_ood  else None,
+        },
         "models":         clf_results,
+        "prefix_curve":   prefix_curve,
+        "open_set":       open_set_result,
     }
     results_path = models_dir / "results.json"
     with open(results_path, "w") as f:
@@ -918,8 +1375,19 @@ if __name__ == "__main__":
                         help="Cap each agent's pool to N episodes before splitting "
                              "(e.g. --resplit-n-per-agent 300 → 150/75/75 per agent, "
                              "matching 2wikimultihop's budget for a fair comparison).")
+    parser.add_argument("--prefix-eval", action="store_true", default=False,
+                        help="Run early-identification prefix curve analysis at eval time. "
+                             "Evaluates each classifier on truncated prefixes (first N events "
+                             "and first T ms). Adds 'prefix_curve' key to results.json.")
+    parser.add_argument("--open-set-agents", nargs="+", default=None,
+                        metavar="AGENT_ID",
+                        help="Agents to treat as unknown at eval time (excluded from training). "
+                             "Enables open-set AUROC/FPR95 evaluation. Adds 'open_set' key to "
+                             "results.json. Example: --open-set-agents gpt_5_4")
     cli = parser.parse_args()
     train(cli.traces_dir, tag=cli.tag, train_datasets=cli.train_datasets,
           ood_datasets=cli.ood_datasets, agents=cli.agents,
+          open_set_agents=cli.open_set_agents,
           resplit_datasets=cli.resplit_datasets,
-          resplit_n_per_agent=cli.resplit_n_per_agent)
+          resplit_n_per_agent=cli.resplit_n_per_agent,
+          prefix_eval=cli.prefix_eval)

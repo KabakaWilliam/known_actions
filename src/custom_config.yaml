@@ -21,8 +21,12 @@ run:
 # specific MidScene settings for this experiment only.
 # =============================================================================
 agents:
+  - agent_id: gemini_3_flash
+  # - agent_id: qwen3_5_9b
+  # - agent_id: claude_haiku_4_5
+  # - agent_id: seed_2_lite
   # - agent_id: gemma-4-31B-it
-  - agent_id: qwen3_5_27b
+  # - agent_id: qwen3_5_27b
   # - agent_id: gemma_4_26B_A4B_it
   # - agent_id: qwen3vl_8b
     # env:                          # uncomment to override for this experiment
@@ -31,7 +35,6 @@ agents:
   # - agent_id: gpt_5_4
   #   env:                          
   #       MIDSCENE_REPLANNING_CYCLE_LIMIT: "30"
-  # - agent_id: claude_haiku_4_6
   # - agent_id: claude_sonnet_4_6
   # - agent_id: gemini_3_flash
   # - agent_id: gpt_5_4_mini
@@ -44,7 +47,6 @@ agents:
   # - agent_id: qwen35_7b
   # - agent_id: uitars_7b
   # - agent_id: claude_sonnet
-  # - agent_id: gemini_flash
 
 # =============================================================================
 # Datasets
@@ -64,37 +66,27 @@ datasets:
 #   # - name: custom
 #   #   source: builtin
 
-#   - name: 2wikimultihop_val
-#     source: datasets/2wikimultihop_val.json
-#     hf_dataset: 2wikimultihop
-#     split: validation
-#     n_questions: 75
-#     seed: 42
+  - name: 2wikimultihop_train
+    source: datasets/2wikimultihop_train.json
+    hf_dataset: 2wikimultihop
+    split: train
+    n_questions: 150
+    seed: 42
 
-# #   # # --- Additional splits (uncomment + run prep_datasets.py to activate) ---
+  - name: 2wikimultihop_test
+    source: datasets/2wikimultihop_test.json
+    hf_dataset: 2wikimultihop
+    split: test
+    n_questions: 75
+    seed: 42
 
-#   - name: 2wikimultihop_train
-#     source: datasets/2wikimultihop_train.json
-#     hf_dataset: 2wikimultihop
-#     split: train
-#     n_questions: 150
-#     seed: 42
+  - name: 2wikimultihop_val
+    source: datasets/2wikimultihop_val.json
+    hf_dataset: 2wikimultihop
+    split: validation
+    n_questions: 75
+    seed: 42
 
-#   - name: 2wikimultihop_test
-#     source: datasets/2wikimultihop_test.json
-#     hf_dataset: 2wikimultihop
-#     split: test
-#     n_questions: 75
-#     seed: 42
-
-  # FRAMES — Google multi-hop QA benchmark. Test split only (824 questions).
-  # Uses qa.txt prompt (Wikipedia browsing agent), same as 2wikimultihop.
-  # - name: frames_test
-  #   source: datasets/frames_test.json
-  #   hf_dataset: frames
-  #   split: test
-  #   # n_questions: 824   # omit to use all 824; set a lower value to cap
-  #   seed: 42
 
 # # # =============================================================================
 # # # Amazon / WebShop shopping experiment
@@ -105,46 +97,33 @@ datasets:
 # # # datasets:
 # #   # WebShop train/val/test — non-overlapping slices from the same 12k pool
 # #   # seed=42 shuffles once; offset ensures no question appears in two splits
-#   - name: webshop_train
-#     source: datasets/webshop_train.json
-#     hf_dataset: webshop_goals
-#     n_questions: 150
-#     seed: 42
-#     offset: 0
-#     start_url: "https://www.amazon.com"
-#     task_type: shop
-# #     task_prompt_template: |
-# #       You are a shopping assistant. Search Amazon to find a product matching this description:
-# #       "{question}"
-# #       Browse freely. Search, filter, view product pages, and add promising items to your cart.
-# #       You may remove items from your cart if you find better alternatives.
-# #       When done, your cart should contain only the product(s) that best match the description.
-# #       Do NOT proceed to checkout or log in.
+  - name: webshop_train
+    source: datasets/webshop_train.json
+    hf_dataset: webshop_goals
+    n_questions: 150
+    seed: 42
+    offset: 0
+    start_url: "https://www.amazon.com"
+    task_type: shop
 
-#   - name: webshop_val
-#     source: datasets/webshop_val.json
-#     hf_dataset: webshop_goals
-#     n_questions: 75
-#     seed: 42
-#     offset: 150
-#     start_url: "https://www.amazon.com"
-#     task_type: shop
-# #     task_prompt_template: |
-# #       You are a shopping assistant. Search Amazon to find a product matching this description:
-# #       "{question}"
-# #       Browse freely. Search, filter, view product pages, and add promising items to your cart.
-# #       You may remove items from your cart if you find better alternatives.
-# #       When done, your cart should contain only the product(s) that best match the description.
-# #       Do NOT proceed to checkout or log in.
+  - name: webshop_val
+    source: datasets/webshop_val.json
+    hf_dataset: webshop_goals
+    n_questions: 75
+    seed: 42
+    offset: 150
+    start_url: "https://www.amazon.com"
+    task_type: shop
 
-#   - name: webshop_test
-#     source: datasets/webshop_test.json
-#     hf_dataset: webshop_goals
-#     n_questions: 75
-#     seed: 42
-#     offset: 225
-#     start_url: "https://www.amazon.com"
-#     task_type: shop
+
+  - name: webshop_test
+    source: datasets/webshop_test.json
+    hf_dataset: webshop_goals
+    n_questions: 75
+    seed: 42
+    offset: 225
+    start_url: "https://www.amazon.com"
+    task_type: shop
 # #     task_prompt_template: |
 # #       You are a shopping assistant. Search Amazon to find a product matching this description:
 # #       "{question}"
@@ -154,30 +133,29 @@ datasets:
 # #       Do NOT proceed to checkout or log in.
 
 # #   # DeepShop — OOD evaluation only (never used for training)
-#   - name: deepshop_ood
-#     source: datasets/deepshop_ood.json
-#     hf_dataset: deepshop
-#     split: train
-#     n_questions: 150
-#     seed: 42
-#     start_url: "https://www.amazon.com"
-#     task_type: shop
-# #     task_prompt_template: |
-# #       You are a shopping assistant. Search Amazon to find a product matching this description:
-# #       "{question}"
-# #       Browse freely. Search, filter, view product pages, and add promising items to your cart.
-# #       You may remove items from your cart if you find better alternatives.
-# #       When done, your cart should contain only the product(s) that best match the description.
-# #       Do NOT proceed to checkout or log in.
+  - name: deepshop_ood
+    source: datasets/deepshop_ood.json
+    hf_dataset: deepshop
+    split: train
+    n_questions: 150
+    seed: 42
+    start_url: "https://www.amazon.com"
+    task_type: shop
 
-# # =============================================================================
+  # FRAMES — Google multi-hop QA benchmark. Test split only (824 questions).
+  # Uses qa.txt prompt (Wikipedia browsing agent), same as 2wikimultihop.
+  - name: frames_test
+    source: datasets/frames_test.json
+    hf_dataset: frames
+    split: test
+    # n_questions: 824   # omit to use all 824; set a lower value to cap
+    seed: 42
+
 # # WebGames — interactive browser challenges (webgames.convergence.ai)
 # # 153 tasks sorted alphabetically by path; split deterministically by offset.
 # # Each task has its own start_url; no dataset-level start_url needed.
 # # Prep datasets first: python prep_datasets.py --config custom_config.yaml
 # # =============================================================================
-
-# datasets:
   - name: webgames_train
     source: datasets/webgames_train.json
     hf_dataset: webgames
@@ -198,10 +176,3 @@ datasets:
     n_questions: 25
     offset: 125
     task_type: webgames
-
-  - name: frames_test
-    source: datasets/frames_test.json
-    hf_dataset: frames
-    split: test
-    # n_questions: 824   # omit to use all 824; set a lower value to cap
-    seed: 42

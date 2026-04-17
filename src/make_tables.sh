@@ -7,6 +7,19 @@
 #
 # Uncomment table blocks below to activate them.
 
+# # 5 in-domain only
+# python make_tables.py --in-domain-only
+
+# # full table (all 12 columns)
+# python make_tables.py
+
+# # just the cross-dataset OOD pairs (no webshop↔2wiki)
+# python make_tables.py --ood-cols wiki_frames wiki_deepshop frames_wiki webshop_deepshop deepshop_webshop
+
+# python make_tables.py --in-domain-only --wiki-tag wiki
+
+
+
 set -euo pipefail
 cd "$(dirname "$0")"  # always run from src/
 

@@ -13,7 +13,7 @@ cd "$(dirname "$0")"  # always run from src/
 
 PYTHON=/opt/anaconda/envs/dispatch/bin/python
 TRACES_DIR=./traces
-CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-1}"   # override: CUDA_VISIBLE_DEVICES=2 bash train_classifiers.sh
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2}"   # override: CUDA_VISIBLE_DEVICES=2 bash train_classifiers.sh
 export CUDA_VISIBLE_DEVICES
 APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-/VData/linna4335/.apptainer_cache}"
 export APPTAINER_CACHEDIR
@@ -48,19 +48,19 @@ run_experiment() {
 # run_experiment wiki_2_frames \
 #     --train-datasets 2wikimultihop \
 #     --ood-datasets frames \
-#     --agents gpt_5_4 gemma_4_26B_A4B_it glm_4.6v_flash qwen3vl_8b qwen3vl_30b_a3b uitars_7b
+#     --agents gpt_5_4 gemma_4_26B_A4B_it gemini_3_1 glm_4.6v_flash qwen3vl_8b qwen3vl_30b_a3b uitars_7b qwen3_5_27b
 
 # ── FRAMES (hard) → 2wikimultihop OOD (easy) ─────────────────────────────────
 # Hypothesis: harder compositional tasks elicit more reliable agent fingerprints
 # that generalise to simpler same-site tasks.
 # --resplit-datasets: frames only has a _test dir, so pool all traces and split
 # --resplit-n-per-agent 300: cap to 150/75/75 per agent to match 2wiki's budget
-run_experiment frames_2_wiki \
-    --train-datasets frames \
-    --resplit-datasets frames \
-    --resplit-n-per-agent 300 \
-    --ood-datasets 2wikimultihop \
-    --agents gpt_5_4 gemma_4_26B_A4B_it glm_4.6v_flash qwen3vl_8b qwen3vl_30b_a3b uitars_7b
+# run_experiment frames_2_wiki \
+#     --train-datasets frames \
+#     --resplit-datasets frames \
+#     --resplit-n-per-agent 300 \
+#     --ood-datasets 2wikimultihop \
+#     --agents gpt_5_4 gemma_4_26B_A4B_it gemini_3_1 glm_4.6v_flash qwen3vl_8b qwen3vl_30b_a3b uitars_7b qwen3_5_27b
 
 # # ── Amazon in-domain ──────────────────────────────────────────────────────────
 # run_experiment webshop \
@@ -70,6 +70,27 @@ run_experiment frames_2_wiki \
 # run_experiment webshop_ood_deepshop_wiki \
 #     --train-datasets webshop \
 #     --ood-datasets deepshop 2wikimultihop
+
+# ── Webshop train → DeepShop OOD ───────────────────────────────────────────────
+# run_experiment webshop_ood_deepshop \
+#     --train-datasets webshop \
+#     --ood-datasets deepshop \
+#     --agents gpt_5_4 claude_opus_4_6 gemma_4_26B_A4B_it glm_4.6v_flash qwen3vl_8b qwen3vl_30b_a3b uitars_7b gemini_3_1 qwen3_5_27b
+
+# ── DeepShop train → Webshop OOD ───────────────────────────────────────────────
+# deepshop only has a _ood split, so --resplit-datasets pools all traces and
+# stratified-splits 50/25/25 by agent. --resplit-n-per-agent 150 → ~150/75/75
+# per agent, matching 2wiki's budget.
+# Note: other experiments that use --ood-datasets deepshop are unaffected —
+# --resplit-datasets is only applied when explicitly passed.
+run_experiment deepshop_2_webshop \
+    --train-datasets deepshop \
+    --resplit-datasets deepshop \
+    --resplit-n-per-agent 150 \
+    --ood-datasets webshop \
+    --agents gpt_5_4 claude_opus_4_6 gemma_4_26B_A4B_it glm_4.6v_flash qwen3vl_8b qwen3vl_30b_a3b uitars_7b gemini_3_1 qwen3_5_27b
+
+
 
 # ── Amazon train → Wikipedia OOD ──────────────────────────────────────────────
 # run_experiment amazon_ood_wiki \
@@ -96,8 +117,6 @@ run_experiment frames_2_wiki \
 # run_experiment webgames_all_ood \
 #     --train-datasets webgames \
 #     --ood-datasets 2wikimultihop webshop deepshop \
-#     --agents gpt_5_4 claude_opus_4_6 gemini_3_1 glm_4.6v_flash uitars_7b qwen3vl_8b
-#     # --agents gpt_5_4 claude_opus_4_6 gemini_3_1 glm_4.6v_flash qwen3vl_30b_a3b uitars_7b
 
 
 # # ── WebGames in-domain proprietery only ────────────────────────────────────────────────────────

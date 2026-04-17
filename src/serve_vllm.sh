@@ -17,7 +17,14 @@
 #     --max-model-len 32768 \
 
 
-CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3.5-27B \
+# CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3.5-27B \
+#     --port 3031 \
+#     --limit-mm-per-prompt.video 0 \
+#     --reasoning-parser qwen3 \
+#     --enable-prefix-caching \
+#     --max_model_len 163840 
+
+CUDA_VISIBLE_DEVICES=1 vllm serve Qwen/Qwen3.5-9B \
     --port 3031 \
     --limit-mm-per-prompt.video 0 \
     --reasoning-parser qwen3 \
@@ -40,6 +47,19 @@ CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3.5-27B \
 #      --mm-encoder-tp-mode data \
 #      --mm_processor_cache_type shm \
 #      --port 3031 
+
+
+vllm serve zai-org/GLM-4.6V \
+     --tensor-parallel-size 4 \
+     --tool-call-parser glm45 \
+     --reasoning-parser glm45 \
+     --enable-auto-tool-choice \
+     --served-model-name glm-4.6v \
+     --enable-expert-parallel \
+     --allowed-local-media-path / \
+     --mm-encoder-tp-mode data \
+     --mm_processor_cache_type shm \
+     --port 3031 
 
 # CUDA_VISIBLE_DEVICES=2 vllm serve ByteDance-Seed/UI-TARS-1.5-7B \
 #     --port 3031 \

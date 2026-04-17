@@ -1,4 +1,5 @@
 import argparse, datetime, itertools, json, os, random, re, subprocess, sys, threading, uuid
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from dotenv import load_dotenv
@@ -152,6 +153,85 @@ def build_apptainer_cmd(agent, q: dict, episode_id, output_dir: str, dataset: di
     return cmd
 
 
+# ─── Resume helpers ───────────────────────────────────────────────────────────
+
+def find_completed_counts(agent_id: str, dataset_name: str) -> dict[str, int]:
+    """Return {question: n_valid_traces} for already-collected episodes.
+
+    Only counts traces where error is null (successful collection).
+    Used to skip questions that already have enough reps.
+    """
+    dataset_dir = OUTPUT_DIR / agent_id / dataset_name
+    if not dataset_dir.exists():
+        return {}
+    counts: dict[str, int] = defaultdict(int)
+    for trace_file in dataset_dir.glob("*/*.json"):
+        try:
+            with open(trace_file) as f:
+                trace = json.load(f)
+            if trace.get("error") is None:
+                q = (trace.get("meta") or {}).get("question")
+                if q:
+                    counts[q] += 1
+        except Exception:
+            pass
+    return dict(counts)
+
+
+# ─── Fatal error detection ────────────────────────────────────────────────────
+
+# Errors that mean every subsequent episode will also fail — abort immediately.
+FATAL_API_PATTERNS = [
+    "credit balance is too low",
+    "insufficient_quota",
+    "invalid_api_key",
+    "401 Unauthorized",
+    "402 Payment",
+    "402 This request requires more credits",
+]
+
+
+def check_trace_for_fatal_error(host_out_dir: Path) -> str | None:
+    """Scan the newest JSON in host_out_dir for a fatal API error.
+
+    Returns the error string if fatal, None otherwise.
+    """
+    try:
+        traces = sorted(host_out_dir.glob("*.json"),
+                        key=lambda p: p.stat().st_mtime, reverse=True)
+        if not traces:
+            return None
+        with open(traces[0]) as f:
+            trace = json.load(f)
+        error = trace.get("error") or ""
+        for pattern in FATAL_API_PATTERNS:
+            if pattern.lower() in error.lower():
+                return error
+    except Exception:
+        pass
+    return None
+
+
+# ─── Post-run validation ──────────────────────────────────────────────────────
+
+def summarise_run_errors(agents: list, datasets: list, run_ts: str) -> int:
+    """Print any traces from this run that have a non-null error. Returns error count."""
+    error_count = 0
+    for agent, dataset in itertools.product(agents, datasets):
+        out_dir = OUTPUT_DIR / agent["agent_id"] / dataset["name"] / run_ts
+        for trace_file in sorted(out_dir.glob("*.json")):
+            try:
+                with open(trace_file) as f:
+                    trace = json.load(f)
+                if trace.get("error"):
+                    error_count += 1
+                    short = str(trace["error"]).split("\n")[0][:120]
+                    print(f"  [ERROR] {agent['agent_id']}/{dataset['name']}/{trace_file.name}: {short}")
+            except Exception:
+                pass
+    return error_count
+
+
 def run_episode(agent, q: dict, episode_id, output_dir, timeout_s, dataset, dry_run=False) -> tuple[bool, list[str]]:
     cmd = build_apptainer_cmd(agent, q, episode_id, output_dir, dataset)
     if dry_run:
@@ -216,64 +296,113 @@ def main():
     run_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    total_q       = sum(len(d["questions"]) for d in datasets)
-    total_episodes = len(agents) * total_q * episodes_per_combo
-    ds_summary    = ", ".join(f"{d['name']}({len(d['questions'])}q)" for d in datasets)
-    workers_label = f"{workers} (parallel)" if workers > 1 else "1 (serial)"
+    # ── Resume: scan existing traces to find already-completed questions ───────
+    print("Scanning existing traces for resume state...")
+    completed_counts: dict[tuple, dict[str, int]] = {}
+    for agent, dataset in itertools.product(agents, datasets):
+        key = (agent["agent_id"], dataset["name"])
+        completed_counts[key] = find_completed_counts(agent["agent_id"], dataset["name"])
+
+    total_q        = sum(len(d["questions"]) for d in datasets)
+    total_possible = len(agents) * total_q * episodes_per_combo
+    ds_summary     = ", ".join(f"{d['name']}({len(d['questions'])}q)" for d in datasets)
+    workers_label  = f"{workers} (parallel)" if workers > 1 else "1 (serial)"
+
+    # ── Build flat job list, skipping already-completed episodes ──────────────
+    jobs    = []
+    skipped = 0
+    for agent, dataset in itertools.product(agents, datasets):
+        key           = (agent["agent_id"], dataset["name"])
+        counts        = completed_counts[key]
+        container_out = f"/app/workspace/traces/{agent['agent_id']}/{dataset['name']}/{run_ts}"
+        host_out      = OUTPUT_DIR / agent["agent_id"] / dataset["name"] / run_ts
+        for q in dataset["questions"]:
+            question_str = q["question"] if isinstance(q, dict) else q
+            done = counts.get(question_str, 0)
+            remaining = episodes_per_combo - done
+            if remaining <= 0:
+                skipped += episodes_per_combo
+                continue
+            if done > 0:
+                skipped += done
+            for _ in range(remaining):
+                ep_id = f"{agent['agent_id']}_{uuid.uuid4().hex[:8]}"
+                label = f"{agent['agent_id']} | {dataset['name']} | {question_str[:45]}"
+                jobs.append((agent, q, ep_id, container_out, host_out, dataset, label))
+
     print(f"Config:   {args.config.name}")
     print(f"Agents:   {[a['agent_id'] for a in agents]}")
     print(f"Datasets: [{ds_summary}]")
-    print(f"Episodes: {total_episodes}  ({len(agents)} agents × {total_q} questions × {episodes_per_combo} reps)")
+    print(f"Episodes: {len(jobs)} to run  ({skipped} skipped — already collected)")
     print(f"Workers:  {workers_label}")
     print()
 
-    # Pre-build flat job list
-    jobs = []
-    for agent, dataset in itertools.product(agents, datasets):
-        container_out = f"/app/workspace/traces/{agent['agent_id']}/{dataset['name']}/{run_ts}"
-        for q in dataset["questions"]:
-            for _ in range(episodes_per_combo):
-                ep_id = f"{agent['agent_id']}_{uuid.uuid4().hex[:8]}"
-                label = f"{agent['agent_id']} | {dataset['name']} | {q['question'][:45]}"
-                jobs.append((agent, q, ep_id, container_out, dataset, label))
+    if not jobs:
+        print("All episodes already collected. Nothing to do.")
+        return
 
     succeeded = failed = 0
-    lock = threading.Lock()
+    lock        = threading.Lock()
+    abort_event = threading.Event()
 
-    if args.dry_run or workers == 1:
-        bar = tqdm(jobs, total=len(jobs), unit="ep", dynamic_ncols=True)
-        for agent, q, ep_id, out, dataset, label in bar:
-            bar.set_description(label[:55])
-            ok, lines = run_episode(agent, q, ep_id, out, timeout_s, dataset, args.dry_run)
+    def _handle_result(ok, lines, label, agent, dataset, host_out):
+        nonlocal succeeded, failed
+        with lock:
             if ok:
                 succeeded += 1
             else:
                 failed += 1
+        status = "✓" if ok else "✗"
+        tqdm.write(f"[{status}] {label}")
+        for line in lines:
+            tqdm.write(f"    {line}")
+        # Fatal error check — fires after every successful subprocess call
+        if ok and not args.dry_run:
+            fatal = check_trace_for_fatal_error(host_out)
+            if fatal:
+                short = fatal.split("\n")[0][:120]
+                tqdm.write(f"\n[FATAL] API error — aborting run:\n  {short}\n")
+                abort_event.set()
+
+    def _run_with_abort(agent, q, ep_id, out, host_out, timeout_s, dataset):
+        if abort_event.is_set():
+            return False, ["[SKIP] Aborted due to fatal error"]
+        return run_episode(agent, q, ep_id, out, timeout_s, dataset, args.dry_run)
+
+    if args.dry_run or workers == 1:
+        bar = tqdm(jobs, total=len(jobs), unit="ep", dynamic_ncols=True)
+        for agent, q, ep_id, out, host_out, dataset, label in bar:
+            if abort_event.is_set():
+                break
+            bar.set_description(label[:55])
+            ok, lines = _run_with_abort(agent, q, ep_id, out, host_out, timeout_s, dataset)
+            _handle_result(ok, lines, label, agent, dataset, host_out)
             bar.set_postfix(ok=succeeded, fail=failed)
-            for line in lines:
-                tqdm.write(line)
     else:
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            future_to_label = {
-                pool.submit(run_episode, agent, q, ep_id, out, timeout_s, ds): label
-                for agent, q, ep_id, out, ds, label in jobs  # q is now the full question dict
+            future_to_meta = {
+                pool.submit(_run_with_abort, agent, q, ep_id, out, host_out, timeout_s, ds):
+                    (label, agent, ds, host_out)
+                for agent, q, ep_id, out, host_out, ds, label in jobs
             }
-            bar = tqdm(as_completed(future_to_label), total=len(jobs), unit="ep", dynamic_ncols=True)
+            bar = tqdm(as_completed(future_to_meta), total=len(jobs), unit="ep", dynamic_ncols=True)
             for future in bar:
-                label = future_to_label[future]
+                label, agent, dataset, host_out = future_to_meta[future]
                 ok, lines = future.result()
+                _handle_result(ok, lines, label, agent, dataset, host_out)
                 with lock:
-                    if ok:
-                        succeeded += 1
-                    else:
-                        failed += 1
                     bar.set_postfix(ok=succeeded, fail=failed)
-                status = "✓" if ok else "✗"
-                tqdm.write(f"[{status}] {label}")
-                for line in lines:
-                    tqdm.write(f"    {line}")
 
     print(f"\nDone: {succeeded} succeeded, {failed} failed")
+
+    # ── Post-run: report any traces with errors ────────────────────────────────
+    if not args.dry_run:
+        print("\nValidating collected traces...")
+        n_errors = summarise_run_errors(agents, datasets, run_ts)
+        if n_errors:
+            print(f"  {n_errors} trace(s) recorded errors (see above).")
+        else:
+            print("  All traces clean.")
 
 
 if __name__ == "__main__":

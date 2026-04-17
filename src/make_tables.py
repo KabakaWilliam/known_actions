@@ -2,12 +2,21 @@
 make_tables.py — Generate publication-ready LaTeX table from trace_analyzer results.
 
 Usage:
-    python make_tables.py [traces_dir] [--agents agent_id ...]
+    python make_tables.py
+    python make_tables.py --agents gpt_5_4 qwen3vl_8b uitars_7b
+    python make_tables.py --wiki-tag wiki_ood_amazon_deep
+    python make_tables.py --in-domain-only --wiki-tag wiki ##preferred with all 9 models
 
-Examples:
-    python make_tables.py                                      # all agents with display_name
-    python make_tables.py --agents gpt_5_4 qwen3vl_8b uitars_7b # subset only
-    python make_tables.py ./traces --agents gpt_5_4 glm_4.6v_flash
+
+Column sources (defaults):
+    2Wiki columns        : wiki_ood_amazon_deep  (test + webshop OOD + deepshop OOD)
+    Webshop columns      : webshop_ood_deepshop  (test + deepshop OOD)
+    Webshop→2Wiki column : webshop_ood_deepshop_wiki (OOD 2wiki key)
+
+Claude Opus notes:
+    - Has NO deepshop traces → marked † in 2Wiki→DeepShop and Webshop→DeepShop columns
+    - Was excluded from the webshop experiments (pre-dates its addition) →
+      marked † in Webshop, Webshop→2Wiki, Webshop→DeepShop columns
 
 Requires in LaTeX preamble:
     \\usepackage[table]{xcolor}
@@ -30,44 +39,106 @@ except ImportError:
 
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
 
-# ─── Column definitions ───────────────────────────────────────────────────────
-# Built dynamically from --wiki-tag / --amazon-tag at runtime.
-# Defaults match the most common experiment tag names.
-WIKI_TAG_DEFAULT   = "wiki_ood_amazon"
-AMAZON_TAG_DEFAULT = "webshop_ood_deepshop"
+# ─── Agent ID aliases ─────────────────────────────────────────────────────────
+# Some older experiments stored agent IDs under different names.
+AGENT_ALIASES: dict[str, list[str]] = {
+    "gpt_5_4": ["gpt54", "gpt_5_4"],
+}
 
-def build_column_defs(wiki_tag: str, amazon_tag: str) -> list:
-    """Return COLUMN_DEFS with the given experiment tags substituted in."""
-    return [
-        (wiki_tag,   "test", None,
-            r"\makecell{\textbf{2Wiki} \\ \textit{(in-dom.)}}"),
-        (wiki_tag,   "ood",  "webshop",
-            r"\makecell{\textbf{2Wiki$\to$Webshop} \\ \textit{(OOD)}}"),
-        (wiki_tag,   "ood",  "deepshop",
-            r"\makecell{\textbf{2Wiki$\to$DeepShop} \\ \textit{(hard OOD)}}"),
-        (amazon_tag, "test", None,
-            r"\makecell{\textbf{Webshop} \\ \textit{(in-dom.)}}"),
-        (amazon_tag, "ood",  "2wikimultihop",
-            r"\makecell{\textbf{Webshop$\to$2Wiki} \\ \textit{(OOD)}}"),
-        (amazon_tag, "ood",  "deepshop",
-            r"\makecell{\textbf{Webshop$\to$DeepShop} \\ \textit{(hard OOD)}}"),
-    ]
+# Agents with no deepshop traces (excluded from deepshop-related experiments).
+# claude_opus_4_6 has deepshop_ood traces — no longer absent.
+DEEPSHOP_ABSENT = frozenset()
+# Agents absent from webshop experiments.
+# claude_opus_4_6 has webshop train/val/test traces — no longer absent.
+WEBSHOP_ABSENT  = frozenset()
 
-N_COND_COLS  = 6
-N_TOTAL_COLS = N_COND_COLS + 2  # + Model + Clf.
+# ─── Default experiment tags ──────────────────────────────────────────────────
+WIKI_TAG_DEFAULT          = "wiki_ood_amazon_deep"
+AMAZON_TAG_DEFAULT        = "webshop_ood_deepshop"
+AMAZON_WIKI_TAG_DEFAULT   = "webshop_ood_deepshop_wiki"
+FRAMES_TAG_DEFAULT        = "frames_2_wiki"
+WIKI_FRAMES_TAG_DEFAULT   = "wiki_2_frames"
+DEEPSHOP_TAG_DEFAULT      = "deepshop_2_webshop"
+WEBGAMES_TAG_DEFAULT      = "webgames_all_ood"
 
-# Classifiers shown per agent group (key in results.json → display label)
+# Short keys for OOD columns — used by --ood-cols
+OOD_COL_KEYS = [
+    "wiki_webshop", "wiki_deepshop", "wiki_frames",
+    "webshop_wiki", "webshop_deepshop",
+    "frames_wiki",
+    "deepshop_webshop",
+]
+
+# ─── Classifiers shown per agent group ────────────────────────────────────────
 CLASSIFIERS = [
     ("RandomForest", "RF"),
     ("XGBoost",      "XGB"),
     ("LSTM",         "LSTM"),
 ]
 
+# ─── Sentinels ────────────────────────────────────────────────────────────────
+_ZERO_WITH_SUPPORT = object()   # agent in experiment but classifier got 0 F1
+_DAGGER            = object()   # agent excluded / has no data in this domain
+
+
+def build_column_defs(wiki_tag: str, amazon_tag: str, amazon_wiki_tag: str,
+                      frames_tag: str, wiki_frames_tag: str,
+                      deepshop_tag: str, webgames_tag: str) -> list:
+    """
+    Return COLUMN_DEFS as 6-tuples:
+        (col_key, tag, split, ood_key, latex_header, absent_agents)
+
+    col_key: short string identifier used by --ood-cols to filter OOD columns.
+             In-domain columns always use col_key="test_*".
+
+    absent_agents: set of agent_ids that show '--‡' when their result is None.
+    """
+    return [
+        # ── In-domain (col_key="test_*", always included unless --in-domain-only
+        #    filters to only these) ────────────────────────────────────────────
+        ("test_wiki",     wiki_tag,     "test", None,
+            r"\makecell{\textbf{2Wiki} \\ \textit{(in-dom.)}}",
+            frozenset()),
+        ("test_frames",   frames_tag,   "test", None,
+            r"\makecell{\textbf{FRAMES} \\ \textit{(in-dom.)}}",
+            frozenset()),
+        ("test_webshop",  amazon_tag,   "test", None,
+            r"\makecell{\textbf{Webshop} \\ \textit{(in-dom.)}}",
+            WEBSHOP_ABSENT),
+        ("test_deepshop", deepshop_tag, "test", None,
+            r"\makecell{\textbf{DeepShop} \\ \textit{(in-dom.)}}",
+            DEEPSHOP_ABSENT),
+        ("test_webgames", webgames_tag, "test", None,
+            r"\makecell{\textbf{WebGames} \\ \textit{(in-dom.)}}",
+            frozenset()),
+        # ── OOD ───────────────────────────────────────────────────────────────
+        ("wiki_webshop",    wiki_tag,        "ood", "webshop",
+            r"\makecell{\textbf{2Wiki$\to$Webshop} \\ \textit{(OOD)}}",
+            frozenset()),
+        ("wiki_deepshop",   wiki_tag,        "ood", "deepshop",
+            r"\makecell{\textbf{2Wiki$\to$DeepShop} \\ \textit{(OOD)}}",
+            DEEPSHOP_ABSENT),
+        ("wiki_frames",     wiki_frames_tag, "ood", "frames",
+            r"\makecell{\textbf{2Wiki$\to$FRAMES} \\ \textit{(OOD)}}",
+            frozenset()),
+        ("webshop_wiki",    amazon_wiki_tag, "ood", "2wikimultihop",
+            r"\makecell{\textbf{Webshop$\to$2Wiki} \\ \textit{(OOD)}}",
+            WEBSHOP_ABSENT),
+        ("webshop_deepshop", amazon_tag,     "ood", "deepshop",
+            r"\makecell{\textbf{Webshop$\to$DeepShop} \\ \textit{(OOD)}}",
+            WEBSHOP_ABSENT | DEEPSHOP_ABSENT),
+        ("frames_wiki",     frames_tag,      "ood", "2wikimultihop",
+            r"\makecell{\textbf{FRAMES$\to$2Wiki} \\ \textit{(OOD)}}",
+            frozenset()),
+        ("deepshop_webshop", deepshop_tag,   "ood", "webshop",
+            r"\makecell{\textbf{DeepShop$\to$Webshop} \\ \textit{(OOD)}}",
+            DEEPSHOP_ABSENT),
+    ]
+
 
 # ─── Loaders ─────────────────────────────────────────────────────────────────
 
 def load_results(traces_dir: Path) -> dict:
-    """Load all results.json files found under traces_dir/models/."""
     results_map = {}
     for path in (traces_dir / "models").glob("*/results.json"):
         tag = path.parent.name
@@ -80,11 +151,6 @@ def load_results(traces_dir: Path) -> dict:
 
 
 def load_agents(config_path: Path) -> list:
-    """
-    Read agents from config.yaml.
-    Returns list of {agent_id, display_name, source} for agents that have
-    display_name set, in config order (proprietary first, then open).
-    """
     if not _YAML or not config_path.exists():
         return []
     with open(config_path) as f:
@@ -98,7 +164,6 @@ def load_agents(config_path: Path) -> list:
             "display_name": a["display_name"],
             "source":       a.get("source", "open"),
         })
-    # Stable sort: proprietary before open, preserving config order within each group
     agents.sort(key=lambda a: 0 if a["source"] == "proprietary" else 1)
     return agents
 
@@ -137,28 +202,44 @@ def filtered_macro_f1(report, agent_ids: list) -> float | None:
     return sum(f1s) / len(f1s) if f1s else None
 
 
-_ZERO_WITH_SUPPORT = object()  # sentinel: agent ran but classifier got 0 correct
+def _resolve_agent_f1(report, agent_id: str) -> float | None:
+    """Look up agent_id in report, trying AGENT_ALIASES if the primary key is missing."""
+    for key in AGENT_ALIASES.get(agent_id, [agent_id]):
+        entry = report.get(key)
+        if isinstance(entry, dict):
+            return entry
+    return None
 
 
-def agent_f1(report, agent_id: str):
+def agent_f1(report, agent_id: str, absent_agents: frozenset = frozenset()):
+    """
+    Return the F1 value for agent_id in report, or a sentinel:
+      _DAGGER            — agent is in absent_agents and has no result (excluded by design)
+      _ZERO_WITH_SUPPORT — agent ran but got 0 F1 (classifier failure)
+      None               — no data, unknown reason
+    """
     if not report:
-        return None
-    entry = report.get(agent_id)
+        return _DAGGER if agent_id in absent_agents else None
+    entry = _resolve_agent_f1(report, agent_id)
+    if entry is None:
+        return _DAGGER if agent_id in absent_agents else None
     if not isinstance(entry, dict):
-        return None
+        return _DAGGER if agent_id in absent_agents else None
     if entry.get("support", 1) == 0:
-        return None  # agent has no episodes in this split → not a real result
+        return None
     f1 = entry.get("f1-score", 0.0)
     if f1 == 0.0:
-        return _ZERO_WITH_SUPPORT  # ran but completely misclassified → dagger
+        return _ZERO_WITH_SUPPORT
     return f1
 
 
 def fmt(x) -> str:
     if x is None:
         return "--"
+    if x is _DAGGER:
+        return r"--$^{\ddagger}$"
     if x is _ZERO_WITH_SUPPORT:
-        return r"0.00$^\dagger$"
+        return r"0.00$^{\dagger}$"
     return f"{x * 100:.2f}"
 
 
@@ -172,8 +253,11 @@ def bold_best_per_col(rows: list) -> list:
     for c in range(len(rows[0])):
         nums = []
         for r in rows:
+            raw = r[c]
+            # strip any LaTeX markup to get the number
+            stripped = raw.replace(r"\textbf{", "").replace("}", "").split("$")[0]
             try:
-                nums.append(float(r[c]))
+                nums.append(float(stripped))
             except (ValueError, TypeError):
                 nums.append(None)
         valid = [v for v in nums if v is not None]
@@ -188,27 +272,42 @@ def bold_best_per_col(rows: list) -> list:
 
 # ─── Table building ───────────────────────────────────────────────────────────
 
-def clf_rows(results_map: dict, get_f1, column_defs: list) -> list:
+def clf_rows(results_map: dict, get_f1_fn, column_defs: list) -> list:
     """Return one formatted row per classifier, with bold applied per column."""
     raw = []
     for clf_key, _ in CLASSIFIERS:
         row = []
-        for tag, split, ood_key, _ in column_defs:
+        for _, tag, split, ood_key, _, absent_agents in column_defs:
             rep = get_report(results_map, tag, clf_key, split, ood_key)
-            row.append(fmt(get_f1(rep)))
+            row.append(fmt(get_f1_fn(rep, absent_agents)))
         raw.append(row)
     return bold_best_per_col(raw)
 
 
+def agent_has_results(results_map: dict, agent_id: str, column_defs: list) -> bool:
+    """Return True if the agent has at least one non-None F1 value across all columns."""
+    for clf_key, _ in CLASSIFIERS:
+        for _, tag, split, ood_key, _, absent_agents in column_defs:
+            if agent_id in absent_agents:
+                continue
+            rep = get_report(results_map, tag, clf_key, split, ood_key)
+            v = agent_f1(rep, agent_id, absent_agents)
+            if v is not None and v is not _DAGGER:
+                return True
+    return False
+
+
 def render_group(model_label: str, rows: list, lines: list):
-    """Append LaTeX rows for a model group (RF / XGB / LSTM)."""
     for i, ((_, clf_disp), row) in enumerate(zip(CLASSIFIERS, rows)):
-        prefix = f"{model_label:<16}" if i == 0 else " " * 16
+        prefix = f"{model_label:<20}" if i == 0 else " " * 20
         cells  = " & ".join(row)
         lines.append(f"{prefix} & {clf_disp:<4} & {cells} \\\\")
 
 
 def make_table(results_map: dict, agents: list, column_defs: list) -> str:
+    n_cond   = len(column_defs)
+    n_total  = n_cond + 2   # + Model + Clf.
+
     lines: list = []
 
     lines += [
@@ -220,22 +319,23 @@ def make_table(results_map: dict, agents: list, column_defs: list) -> str:
         r"",
         r"\begin{table}[t]",
         r"\caption{Agent identification macro F1 (\%) across datasets and classifiers."
-        r" Best F1 per model group in \textbf{bold}.}",
+        r" Best F1 per model group in \textbf{bold}."
+        r" $^\dagger$~zero F1 despite training presence;"
+        r" $^\ddagger$~agent excluded (no traces in this domain).}",
         r"\label{tab:main}",
         r"\centering",
         r"\renewcommand{\arraystretch}{1.15}",
-        r"\setlength{\tabcolsep}{7pt}",
-        r"\resizebox{0.97\textwidth}{!}{%",
-        r"\begin{tabular}{l l " + "c " * N_COND_COLS + "}",
+        r"\setlength{\tabcolsep}{5pt}",
+        r"\resizebox{\textwidth}{!}{%",
+        r"\begin{tabular}{l l " + "c " * n_cond + "}",
         r"\toprule",
     ]
 
     # Header
-    col_headers = "\n& ".join(h for _, _, _, h in column_defs)
-    lines.append(r"\textbf{Model} & \textbf{Clf.}" + "\n& " + col_headers + r" \\")
+    col_headers = " & ".join(h for _, _, _, _, h, _ in column_defs)
+    lines.append(r"\textbf{Model} & \textbf{Clf.} & " + col_headers + r" \\")
     lines.append(r"\midrule")
 
-    # Per-source agent groups
     proprietary = [a for a in agents if a["source"] == "proprietary"]
     open_src    = [a for a in agents if a["source"] == "open"]
 
@@ -243,37 +343,46 @@ def make_table(results_map: dict, agents: list, column_defs: list) -> str:
         ("Proprietary Models", "headergreen", proprietary),
         ("Open-Source Models", "headerblue",  open_src),
     ]:
-        if not grp_agents:
+        active = [a for a in grp_agents
+                  if agent_has_results(results_map, a["agent_id"], column_defs)]
+        if not active:
             continue
         lines.append(rf"\rowcolor{{{color}}}")
         lines.append(
-            rf"\multicolumn{{{N_TOTAL_COLS}}}{{l}}{{\textbf{{\textit{{{grp_label}}}}}}}" + r" \\"
+            rf"\multicolumn{{{n_total}}}{{l}}{{\textbf{{\textit{{{grp_label}}}}}}}" + r" \\"
         )
         lines.append(r"\midrule")
 
-        for agent in grp_agents:
+        for agent in active:
             aid, disp = agent["agent_id"], agent["display_name"]
-            rows = clf_rows(results_map, lambda rep, a=aid: agent_f1(rep, a), column_defs)
+            rows = clf_rows(
+                results_map,
+                lambda rep, absent, a=aid: agent_f1(rep, a, absent),
+                column_defs,
+            )
             render_group(disp, rows, lines)
             lines.append(r"\midrule")
 
-    # All Models section — macro F1 recomputed from included agents only
-    agent_ids = [a["agent_id"] for a in agents]
+    # All Models section — only include agents with actual results
+    agent_ids = [a["agent_id"] for a in agents
+                 if agent_has_results(results_map, a["agent_id"], column_defs)]
     n_str = f" ({len(agent_ids)} models)" if agent_ids else ""
     lines.append(r"\rowcolor{headergreen}")
     lines.append(
-        rf"\multicolumn{{{N_TOTAL_COLS}}}{{l}}{{\textbf{{\textit{{All Models{n_str}}}}}}}" + r" \\"
+        rf"\multicolumn{{{n_total}}}{{l}}{{\textbf{{\textit{{All Models{n_str}}}}}}}" + r" \\"
     )
     lines.append(r"\midrule")
-    rows = clf_rows(results_map, lambda rep: filtered_macro_f1(rep, agent_ids), column_defs)
+    rows = clf_rows(
+        results_map,
+        lambda rep, absent: filtered_macro_f1(rep, agent_ids),
+        column_defs,
+    )
     render_group("All", rows, lines)
 
     lines += [
         r"\bottomrule",
         r"\end{tabular}%",
         r"}",
-        r"{\footnotesize $^\dagger$ Agent has traces in this domain but the classifier"
-        r" assigns zero correct predictions (complete cross-domain failure).}",
         r"\end{table}",
     ]
 
@@ -285,26 +394,40 @@ def make_table(results_map: dict, agents: list, column_defs: list) -> str:
 def main():
     parser = argparse.ArgumentParser(
         description="Generate LaTeX table from trace_analyzer results.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Examples:\n"
-            "  python make_tables.py\n"
-            "  python make_tables.py --agents gpt_5_4 qwen3vl_8b uitars_7b\n"
-            "  python make_tables.py ./traces --agents gpt_5_4 glm_4.6v_flash"
-        ),
     )
-    parser.add_argument("traces_dir", nargs="?", type=Path, default=Path("./traces"),
-                        help="Root traces directory (default: ./traces)")
-    parser.add_argument("--agents", nargs="+", default=None, metavar="AGENT_ID",
-                        help="Agent IDs to include (default: all agents with display_name in config.yaml). "
-                             "Filters per-agent rows and recomputes All Models macro F1 accordingly.")
-    parser.add_argument("--wiki-tag", default=WIKI_TAG_DEFAULT, metavar="TAG",
-                        help=f"Experiment tag for Wikipedia-trained results (default: {WIKI_TAG_DEFAULT})")
-    parser.add_argument("--amazon-tag", default=AMAZON_TAG_DEFAULT, metavar="TAG",
-                        help=f"Experiment tag for Amazon-trained results (default: {AMAZON_TAG_DEFAULT})")
+    parser.add_argument("traces_dir", nargs="?", type=Path, default=Path("./traces"))
+    parser.add_argument("--agents", nargs="+", default=None, metavar="AGENT_ID")
+    parser.add_argument("--wiki-tag",         default=WIKI_TAG_DEFAULT)
+    parser.add_argument("--amazon-tag",       default=AMAZON_TAG_DEFAULT)
+    parser.add_argument("--amazon-wiki-tag",  default=AMAZON_WIKI_TAG_DEFAULT,
+                        help="Tag for the Webshop→2Wiki column "
+                             f"(default: {AMAZON_WIKI_TAG_DEFAULT})")
+    parser.add_argument("--frames-tag",       default=FRAMES_TAG_DEFAULT,
+                        help=f"Tag for FRAMES in-domain + frames_wiki OOD columns (default: {FRAMES_TAG_DEFAULT})")
+    parser.add_argument("--wiki-frames-tag",  default=WIKI_FRAMES_TAG_DEFAULT,
+                        help=f"Tag for 2Wiki→FRAMES OOD column (default: {WIKI_FRAMES_TAG_DEFAULT})")
+    parser.add_argument("--deepshop-tag",     default=DEEPSHOP_TAG_DEFAULT,
+                        help=f"Tag for DeepShop in-domain + deepshop_webshop OOD columns (default: {DEEPSHOP_TAG_DEFAULT})")
+    parser.add_argument("--webgames-tag",     default=WEBGAMES_TAG_DEFAULT,
+                        help=f"Tag for the WebGames in-domain column (default: {WEBGAMES_TAG_DEFAULT})")
+    parser.add_argument("--in-domain-only", action="store_true", default=False,
+                        help="Only include in-domain (test split) columns — drops all OOD columns.")
+    parser.add_argument("--ood-cols", nargs="+", default=None, metavar="COL_KEY",
+                        choices=OOD_COL_KEYS,
+                        help="OOD columns to include. Choices: " + ", ".join(OOD_COL_KEYS) +
+                             ". Default: all. Ignored when --in-domain-only is set.")
     cli = parser.parse_args()
 
-    column_defs = build_column_defs(cli.wiki_tag, cli.amazon_tag)
+    column_defs = build_column_defs(
+        cli.wiki_tag, cli.amazon_tag, cli.amazon_wiki_tag,
+        cli.frames_tag, cli.wiki_frames_tag,
+        cli.deepshop_tag, cli.webgames_tag,
+    )
+    if cli.in_domain_only:
+        column_defs = [c for c in column_defs if c[2] == "test"]
+    elif cli.ood_cols is not None:
+        col_map = {c[0]: c for c in column_defs}
+        column_defs = [col_map[k] for k in cli.ood_cols if k in col_map]
 
     results_map = load_results(cli.traces_dir)
     if not results_map:
@@ -317,13 +440,14 @@ def main():
         agents = [a for a in agents if a["agent_id"] in requested]
         missing = requested - {a["agent_id"] for a in agents}
         if missing:
-            print(f"Warning: agents not found in config.yaml with display_name: {sorted(missing)}")
+            print(f"Warning: agents not in config.yaml: {sorted(missing)}")
     if not agents:
         print("Warning: no agents to include — per-agent rows will be omitted.")
 
     table = make_table(results_map, agents, column_defs)
 
-    out = cli.traces_dir / "models" / "table_main.tex"
+    suffix = "_in_domain" if cli.in_domain_only else "_main"
+    out = cli.traces_dir / "models" / f"table{suffix}.tex"
     out.write_text(table + "\n")
     print(table)
     print(f"\nSaved: {out}")

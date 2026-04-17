@@ -505,3 +505,18 @@ src/
             └── results.json
 ```
 
+<!-- grep -rl "Error: failed to call AI model service" src/traces/ | awk -F'/' '{print $3"/"$4}' | sort | uniq -c | sort -nr -->
+## Missing data so far
+<!-- 150 claude_opus_4_6/deepshop_ood -->
+<!-- 100 claude_opus_4_6/webgames_train -->
+40 claude_opus_4_6/webshop_test
+25 claude_opus_4_6/webgames_val
+25 claude_opus_4_6/webgames_test
+13 gemma_4_26B_A4B_it/frames_test
+3 gemma_4_26B_A4B_it/deepshop_ood
+2 gemma_4_26B_A4B_it/webgames_train
+2 gemma_4_26B_A4B_it/webgames_test
+2 gemma_4_26B_A4B_it/2wikimultihop_test
+1 gpt_5_4/frames_test
+1 gemma_4_26B_A4B_it/webshop_train
+1 gemma_4_26B_A4B_it/webgames_val
