@@ -97,6 +97,20 @@ run_experiment deepshop_2_webshop \
 #     --train-datasets webshop \
 #     --ood-datasets 2wikimultihop
 
+# ── Family-level classification (model family as label, not individual checkpoint) ──
+# run_experiment wiki_family \
+#     --train-datasets 2wikimultihop \
+#     --label-by family \
+#     --agents gpt_5_4 claude_opus_4_6 gemma_4_26B_A4B_it glm_4.6v_flash \
+#              qwen3vl_8b qwen3vl_30b_a3b uitars_7b gemini_3_1 qwen3_5_27b qwen3_5_9b
+
+# run_experiment webshop_family \
+#     --train-datasets webshop \
+#     --ood-datasets deepshop \
+#     --label-by family \
+#     --agents gpt_5_4 claude_opus_4_6 gemma_4_26B_A4B_it glm_4.6v_flash \
+#              qwen3vl_8b qwen3vl_30b_a3b uitars_7b gemini_3_1 qwen3_5_27b qwen3_5_9b
+
 # ── Agent subset examples (uncomment and edit as needed)────────────────────── ##qwen3vl_8b
 # run_experiment wiki_no_uitars \
 #     --train-datasets 2wikimultihop \
@@ -148,3 +162,6 @@ echo "All experiments complete."
 # number of clicks
 # area of screen covered by mouse movements
 # time spent on each page (if applicable)
+
+
+# bash train_classifiers.sh wiki_family

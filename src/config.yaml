@@ -25,6 +25,7 @@ agents:
   # --- Local vLLM models (start server before running) ---
   - agent_id: gemma-4-31B-it
     display_name: "Gemma-4-31B-it"
+    family: gemma_4
     source: open
     env:
       MIDSCENE_MODEL_NAME:              "google/gemma-4-31B-it"
@@ -35,6 +36,7 @@ agents:
 
   - agent_id: gemma_4_26B_A4B_it
     display_name: "Gemma-4-26B"
+    family: gemma_4
     source: open
     env:
       MIDSCENE_MODEL_NAME:              "google/gemma-4-26B-A4B-it"
@@ -43,8 +45,20 @@ agents:
       MIDSCENE_MODEL_FAMILY:   "gemini"
       MIDSCENE_REPLANNING_CYCLE_LIMIT:  "40"
       
+  - agent_id: glm_4.6v
+    display_name: "GLM-4.6V"
+    family: glm_4.6v
+    source: open
+    env:
+      MIDSCENE_MODEL_NAME:              "glm-4.6v"
+      MIDSCENE_MODEL_API_KEY:           "$VLLM_API_KEY"
+      MIDSCENE_MODEL_BASE_URL:          "http://127.0.0.1:3031/v1"
+      MIDSCENE_MODEL_FAMILY:            "glm-v"
+      MIDSCENE_REPLANNING_CYCLE_LIMIT:  "40"
+
   - agent_id: glm_4.6v_flash
     display_name: "GLM-4.6V-Flash"
+    family: glm_4.6v
     source: open
     env:
       MIDSCENE_MODEL_NAME:              "glm-4.6v"
@@ -55,6 +69,7 @@ agents:
 
   - agent_id: qwen3vl_30b_a3b
     display_name: "Qwen3-VL-30B"
+    family: qwen3vl
     source: open
     env:
       MIDSCENE_MODEL_NAME:              "Qwen/Qwen3-VL-30B-A3B-Instruct"
@@ -65,6 +80,7 @@ agents:
 
   - agent_id: qwen3vl_8b
     display_name: "Qwen3-VL-8B"
+    family: qwen3vl
     source: open
     env:
       MIDSCENE_MODEL_NAME:              "Qwen/Qwen3-VL-8B-Instruct"
@@ -75,6 +91,7 @@ agents:
 
   - agent_id: qwen25vl_7b
     display_name: "Qwen2.5-VL-7B"
+    family: qwen3vl
     source: open
     env:
       MIDSCENE_MODEL_NAME:              "Qwen/Qwen2.5-VL-7B-Instruct"
@@ -87,6 +104,7 @@ agents:
 
   - agent_id: qwen3_5_27b
     display_name: "Qwen3.5-27B"
+    family: qwen35
     source: open
     env:
       MIDSCENE_MODEL_NAME:              "Qwen/Qwen3.5-27B"
@@ -98,6 +116,7 @@ agents:
 
   - agent_id: qwen3_5_9b
     display_name: "Qwen3.5-9B"
+    family: qwen35
     source: open
     env:
       MIDSCENE_MODEL_NAME:              "Qwen/Qwen3.5-9B"
@@ -109,6 +128,7 @@ agents:
 
   - agent_id: uitars_7b
     display_name: "UI-TARS-1.5-7B"
+    family: uitars_1.5
     source: open
     env:
       MIDSCENE_MODEL_NAME:              "ByteDance-Seed/UI-TARS-1.5-7B"
@@ -121,6 +141,7 @@ agents:
 
   - agent_id: gpt_5_4
     display_name: "GPT-5.4"
+    family: gpt_5
     source: proprietary
     env:
       MIDSCENE_MODEL_NAME:     "gpt-5.4"
@@ -130,6 +151,7 @@ agents:
 
   - agent_id: gpt5
     display_name: "GPT-5"
+    family: gpt_5
     source: proprietary
     env:
       MIDSCENE_MODEL_NAME:     "gpt-5"
@@ -139,6 +161,7 @@ agents:
 
   - agent_id: gpt_5_4_mini
     display_name: "GPT-5.4-mini"
+    family: gpt_5
     source: proprietary
     env:
       MIDSCENE_MODEL_NAME:     "gpt-5.4-mini"
@@ -148,6 +171,7 @@ agents:
 
   - agent_id: gpt_5_4_nano
     display_name: "GPT-5.4-nano"
+    family: gpt_5
     source: proprietary
     env:
       MIDSCENE_MODEL_NAME:     "gpt-5.4-mini"
@@ -157,6 +181,7 @@ agents:
 
   - agent_id: claude_haiku_4_5
     display_name: "Claude Haiku 4.5"
+    family: claude_4
     source: proprietary
     env:
       MIDSCENE_MODEL_NAME:     "claude-haiku-4-5-20251001"
@@ -166,6 +191,7 @@ agents:
 
   - agent_id: claude_sonnet_4_6
     display_name: "Claude Sonnet 4.6"
+    family: claude_4
     source: proprietary
     env:
       MIDSCENE_MODEL_NAME:     "claude-sonnet-4-6"
@@ -175,15 +201,21 @@ agents:
 
   - agent_id: claude_opus_4_6
     display_name: "Claude Opus 4.6"
+    family: claude_4
     source: proprietary
     env:
+      # MIDSCENE_MODEL_NAME:     "anthropic/claude-opus-4.6"
+      # MIDSCENE_MODEL_API_KEY:  "$OPEN_ROUTER_API_KEY"
+      # MIDSCENE_MODEL_BASE_URL: "https://openrouter.ai/api/v1"
       MIDSCENE_MODEL_NAME:     "claude-opus-4-6"
       MIDSCENE_MODEL_API_KEY:  "$ANTHROPIC_API_KEY"
       MIDSCENE_MODEL_BASE_URL: "https://api.anthropic.com/v1"
+
       # MIDSCENE_MODEL_FAMILY omitted — Claude uses generic OpenAI-SDK-compat mode
 
   - agent_id: gemini_3_1
     display_name: "Gemini-3.1-Pro"
+    family: gemini_3
     source: proprietary
     env:
       MIDSCENE_MODEL_NAME:     "gemini-3.1-pro-preview"
@@ -193,6 +225,7 @@ agents:
 
   - agent_id: gemini_3_flash
     display_name: "Gemini-3-Flash"
+    family: gemini_3_flash
     source: proprietary
     env:
       MIDSCENE_MODEL_NAME:     "gemini-3-flash-preview"
@@ -204,6 +237,7 @@ agents:
 
   - agent_id: seed_2_lite
     display_name: "Seed-2.0-Lite"
+    family: seed_2
     source: proprietary
     env:
       MIDSCENE_MODEL_NAME:     "bytedance-seed/seed-2.0-lite"

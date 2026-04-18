@@ -506,6 +506,7 @@ src/
 ```
 
 <!-- grep -rl "Error: failed to call AI model service" src/traces/ | awk -F'/' '{print $3"/"$4}' | sort | uniq -c | sort -nr -->
+<!-- to delete: grep -rl "Error: failed to call AI model service" src/traces/claude_opus_4_6/frames_test/ | xargs rm -->
 ## Missing data so far
 <!-- 150 claude_opus_4_6/deepshop_ood -->
 <!-- 100 claude_opus_4_6/webgames_train -->

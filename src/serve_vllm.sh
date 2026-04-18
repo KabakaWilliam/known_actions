@@ -24,12 +24,12 @@
 #     --enable-prefix-caching \
 #     --max_model_len 163840 
 
-CUDA_VISIBLE_DEVICES=1 vllm serve Qwen/Qwen3.5-9B \
-    --port 3031 \
-    --limit-mm-per-prompt.video 0 \
-    --reasoning-parser qwen3 \
-    --enable-prefix-caching \
-    --max_model_len 163840 
+# CUDA_VISIBLE_DEVICES=1 vllm serve Qwen/Qwen3.5-9B \
+#     --port 3031 \
+#     --limit-mm-per-prompt.video 0 \
+#     --reasoning-parser qwen3 \
+#     --enable-prefix-caching \
+#     --max_model_len 163840 
 
 # CUDA_VISIBLE_DEVICES=3 vllm serve Qwen/Qwen3-VL-8B-Instruct \
 #     --port 3030 \

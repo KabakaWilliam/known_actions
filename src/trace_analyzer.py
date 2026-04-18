@@ -2,6 +2,38 @@ import argparse, json, pickle, warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
+_CONFIG_PATH = Path(__file__).parent / "config.yaml"
+
+
+def _load_family_map(config_path: Path = _CONFIG_PATH) -> dict[str, str]:
+    """Return {agent_id: family} from config.yaml. Agents without a family field are omitted."""
+    try:
+        import yaml
+        cfg = yaml.safe_load(config_path.read_text())
+        return {a["agent_id"]: a["family"]
+                for a in cfg.get("agents", []) if "family" in a}
+    except Exception:
+        return {}
+
+
+# Traces with these errors have no usable DOM events — exclude from training.
+# Task-level failures (replanning limit, agent stuck) are still valid fingerprints.
+_INVALID_TRACE_PATTERNS = [
+    "credit balance is too low",
+    "insufficient_quota",
+    "invalid_api_key",
+    "401 unauthorized",
+    "402 payment",
+    "failed to call ai model service",
+]
+
+def _is_valid_trace(episode: dict) -> bool:
+    """Return False only for API-level failures that produce empty/useless traces."""
+    err = (episode.get("error") or "").lower()
+    if any(p in err for p in _INVALID_TRACE_PATTERNS):
+        return False
+    return bool((episode.get("dom_trace") or {}).get("events"))
+
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
@@ -285,6 +317,7 @@ def load_dataset(trace_dir: Path,
                  resplit_seed: int = 42,
                  resplit_n_per_agent: int | None = None,
                  return_events: bool = False,
+                 label_by: str = "agent",
                  ) -> tuple[dict[str, tuple], dict[str, set]]:
     """Load all episode traces, bucketed by split.
 
@@ -317,6 +350,7 @@ def load_dataset(trace_dir: Path,
     """
     resplit_datasets  = set(resplit_datasets or [])
     _open_set_agents  = set(open_set_agents or [])
+    _family_map       = _load_family_map() if label_by == "family" else {}
     buckets: dict[str, tuple[list, list, list, list, list]] = {
         "train":    ([], [], [], [], []),
         "val":      ([], [], [], [], []),
@@ -327,7 +361,7 @@ def load_dataset(trace_dir: Path,
     ds_names: dict[str, set] = {"train": set(), "val": set(), "test": set(),
                                  "ood": set(), "open_set": set()}
     # staging pool for datasets that need a post-hoc stratified split
-    resplit_pool: list[tuple] = []  # (feat, seq, label, base, dataset_name, raw_events)
+    resplit_pool: list[tuple] = []  # (feat, seq, lbl, raw_agent_id, base, dataset_name, raw_events)
 
     for path in sorted(trace_dir.rglob("*.json")):
         rel_parts = path.relative_to(trace_dir).parts
@@ -353,6 +387,7 @@ def load_dataset(trace_dir: Path,
                 feat       = extract_features(episode)
                 seq        = extract_sequence(episode)
                 lbl        = episode["meta"]["agent_id"]
+                lbl        = _family_map.get(lbl, lbl)
                 raw_events = episode.get("dom_trace", {}).get("events", [])
                 buckets["open_set"][0].append(feat)
                 buckets["open_set"][1].append(seq)
@@ -386,12 +421,16 @@ def load_dataset(trace_dir: Path,
         try:
             with open(path) as f:
                 episode = json.load(f)
-            feat       = extract_features(episode)
-            seq        = extract_sequence(episode)
-            lbl        = episode["meta"]["agent_id"]
-            raw_events = episode.get("dom_trace", {}).get("events", [])
+            if not _is_valid_trace(episode):
+                continue
+            feat         = extract_features(episode)
+            seq          = extract_sequence(episode)
+            raw_agent_id = episode["meta"]["agent_id"]
+            lbl          = _family_map.get(raw_agent_id, raw_agent_id)
+            raw_events   = episode.get("dom_trace", {}).get("events", [])
             if base in resplit_datasets:
-                resplit_pool.append((feat, seq, lbl, base, dataset_name, raw_events))
+                # store raw_agent_id separately so resplit caps per-agent, not per-family
+                resplit_pool.append((feat, seq, lbl, raw_agent_id, base, dataset_name, raw_events))
             else:
                 buckets[split][0].append(feat)
                 buckets[split][1].append(seq)
@@ -402,13 +441,14 @@ def load_dataset(trace_dir: Path,
         except Exception as e:
             warnings.warn(f"Skipping {path.name}: {e}")
 
-    # Stratified split for resplit_datasets — group by agent, split within each
+    # Stratified split for resplit_datasets — group by raw agent_id (not family label)
+    # so resplit_n_per_agent caps per individual checkpoint, not per family class.
     if resplit_pool:
         import random as _random
         rng = _random.Random(resplit_seed)
         by_agent: dict[str, list] = {}
         for item in resplit_pool:
-            by_agent.setdefault(item[2], []).append(item)
+            by_agent.setdefault(item[3], []).append(item)  # item[3] = raw_agent_id
         tr_f, va_f, _ = resplit_fracs
         for agent_items in by_agent.values():
             rng.shuffle(agent_items)
@@ -422,7 +462,7 @@ def load_dataset(trace_dir: Path,
                 [("val",   i) for i in agent_items[n_train:n_train + n_val]] +
                 [("test",  i) for i in agent_items[n_train + n_val:]]
             )
-            for dest, (feat, seq, lbl, base, dataset_name, raw_events) in assignments:
+            for dest, (feat, seq, lbl, _aid, base, dataset_name, raw_events) in assignments:
                 buckets[dest][0].append(feat)
                 buckets[dest][1].append(seq)
                 buckets[dest][2].append(lbl)
@@ -925,13 +965,15 @@ def train(trace_dir: Path, tag: str | None = None,
           open_set_agents: list[str] | None = None,
           resplit_datasets: list[str] | None = None,
           resplit_n_per_agent: int | None = None,
-          prefix_eval: bool = False) -> None:
+          prefix_eval: bool = False,
+          label_by: str = "agent") -> None:
     splits, ds_names = load_dataset(trace_dir, train_datasets=train_datasets,
                                     ood_datasets=ood_datasets, agents=agents,
                                     open_set_agents=open_set_agents,
                                     resplit_datasets=resplit_datasets,
                                     resplit_n_per_agent=resplit_n_per_agent,
-                                    return_events=prefix_eval)
+                                    return_events=prefix_eval,
+                                    label_by=label_by)
     if prefix_eval:
         feat_train, seq_train, lbl_train, _,            *_ = splits["train"]
         feat_val,   seq_val,   lbl_val,   _,            *_ = splits["val"]
@@ -1365,6 +1407,12 @@ if __name__ == "__main__":
                         metavar="AGENT_ID",
                         help="Agent IDs to include (e.g. --agents gpt_5_4 qwen3vl_8b). "
                              "Default: all agents found in traces-dir.")
+    parser.add_argument("--families", nargs="+", default=None,
+                        metavar="FAMILY",
+                        help="Select agents by model family (e.g. --families qwen3vl glm gpt). "
+                             "Expands to all agent_ids with that family in config.yaml. "
+                             "Combined with --agents via union if both are specified. "
+                             "Use with --label-by family for family-level classification.")
     parser.add_argument("--resplit-datasets", nargs="+", default=None,
                         metavar="NAME",
                         help="Subset of --train-datasets that lack explicit train/val/test "
@@ -1384,10 +1432,28 @@ if __name__ == "__main__":
                         help="Agents to treat as unknown at eval time (excluded from training). "
                              "Enables open-set AUROC/FPR95 evaluation. Adds 'open_set' key to "
                              "results.json. Example: --open-set-agents gpt_5_4")
+    parser.add_argument("--label-by", choices=["agent", "family"], default="agent",
+                        help="Classification target: 'agent' (default) uses individual checkpoint "
+                             "IDs as class labels; 'family' remaps each agent to its model family "
+                             "(defined in config.yaml) — e.g. qwen3vl_8b and qwen3vl_30b_a3b both "
+                             "become 'qwen3vl'. Useful for family-level fingerprinting experiments.")
     cli = parser.parse_args()
+
+    # Resolve --families into agent IDs and merge with --agents
+    agents = cli.agents
+    if cli.families:
+        family_map = _load_family_map()
+        requested  = set(cli.families)
+        unknown    = requested - set(family_map.values())
+        if unknown:
+            print(f"[WARN] Unknown families (not in config.yaml): {sorted(unknown)}")
+        family_agents = [aid for aid, fam in family_map.items() if fam in requested]
+        agents = sorted(set(family_agents) | set(agents or []))
+
     train(cli.traces_dir, tag=cli.tag, train_datasets=cli.train_datasets,
-          ood_datasets=cli.ood_datasets, agents=cli.agents,
+          ood_datasets=cli.ood_datasets, agents=agents,
           open_set_agents=cli.open_set_agents,
           resplit_datasets=cli.resplit_datasets,
           resplit_n_per_agent=cli.resplit_n_per_agent,
-          prefix_eval=cli.prefix_eval)
+          prefix_eval=cli.prefix_eval,
+          label_by=cli.label_by)
