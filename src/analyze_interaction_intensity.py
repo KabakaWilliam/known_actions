@@ -12,7 +12,7 @@ the thesis that fingerprinting strength tracks along the spectrum:
 
 Usage:
   python analyze_interaction_intensity.py
-  python analyze_interaction_intensity.py --traces-dir ./traces --results-dir ./traces/models
+  python analyze_interaction_intensity.py --traces-dir ./traces --results-dir ./traces/classifiers
 """
 
 import argparse
@@ -107,7 +107,7 @@ def load_dataset_metrics(traces_dir: Path) -> dict[str, list[dict]]:
     dataset_episodes: dict[str, list[dict]] = {}
 
     for agent_dir in sorted(traces_dir.iterdir()):
-        if not agent_dir.is_dir() or agent_dir.name == "models":
+        if not agent_dir.is_dir() or agent_dir.name == "classifiers":
             continue
         for ds_dir in sorted(agent_dir.iterdir()):
             if not ds_dir.is_dir():
@@ -337,7 +337,7 @@ def main():
     )
     parser.add_argument("--traces-dir",  type=Path, default=Path("./traces"),
                         help="Root traces directory (default: ./traces)")
-    parser.add_argument("--results-dir", type=Path, default=Path("./traces/models"),
+    parser.add_argument("--results-dir", type=Path, default=Path("./traces/classifiers"),
                         help="Results directory containing per-tag subdirs with results.json")
     parser.add_argument("--csv", type=Path, default=None,
                         help="Optional: write per-episode metrics to a CSV file")

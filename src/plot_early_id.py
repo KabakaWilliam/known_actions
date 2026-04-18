@@ -455,7 +455,7 @@ def main():
     )
     parser.add_argument(
         "--out-dir", default=None,
-        help="Output directory for PNGs (default: traces-dir/models/<first-tag>/)",
+        help="Output directory for PNGs (default: traces-dir/classifiers/<first-tag>/)",
     )
     args = parser.parse_args()
 
@@ -467,7 +467,7 @@ def main():
     curves_by_tag: dict = {}
     mean_n_events_by_tag: dict = {}
     for tag in tags:
-        results_path = traces_dir / "models" / tag / "results.json"
+        results_path = traces_dir / "classifiers" / tag / "results.json"
         curve, mean_n_events = load_results(results_path, mode)
         if curve is not None:
             curves_by_tag[tag] = curve
@@ -493,7 +493,7 @@ def main():
     else:
         # Save alongside the first tag that has data
         first_tag = next(iter(curves_by_tag))
-        out_dir = traces_dir / "models" / first_tag
+        out_dir = traces_dir / "classifiers" / first_tag
     out_dir.mkdir(parents=True, exist_ok=True)
 
     mode_suffix = "events" if mode == "n_events" else "ms"

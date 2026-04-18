@@ -27,7 +27,7 @@ run_experiment() {
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         "$PYTHON" trace_analyzer.py --traces-dir "$TRACES_DIR" --tag "$tag" "$@"
         echo ""
-        echo "  Saved → $TRACES_DIR/models/$tag/"
+        echo "  Saved → $TRACES_DIR/classifiers/$tag/"
         echo "           ├── classifier.pkl"
         echo "           ├── lstm_model.pt"
         echo "           └── results.json"

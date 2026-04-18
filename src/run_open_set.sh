@@ -53,7 +53,7 @@ run_loo() {
         --agents     "${known_agents[@]}" \
         --open-set-agents "$held_out"
     echo ""
-    echo "  Saved → $TRACES_DIR/models/${DATASET}_open_set/open_set_loo_${held_out}/results.json"
+    echo "  Saved → $TRACES_DIR/classifiers/${DATASET}_open_set/open_set_loo_${held_out}/results.json"
     echo ""
 }
 
@@ -72,7 +72,7 @@ echo "Run: python plot_open_set.py  to generate visualisations."
 # bash run_open_set.sh              # all 6 LOO experiments
 # bash run_open_set.sh gpt_5_4     # single agent
 # DATASET=frames bash run_open_set.sh
-# plot_open_set.py — three figures saved to traces/models/open_set/:
+# plot_open_set.py — three figures saved to traces/classifiers/open_set/:
 
 # open_set_auroc_summary.png — grouped bars (AUROC per held-out agent × classifier)
 # open_set_fpr95_summary.png — FPR95 bars (lower = better detection)

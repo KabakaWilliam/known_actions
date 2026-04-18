@@ -140,7 +140,7 @@ def build_column_defs(wiki_tag: str, amazon_tag: str, amazon_wiki_tag: str,
 
 def load_results(traces_dir: Path) -> dict:
     results_map = {}
-    for path in (traces_dir / "models").glob("*/results.json"):
+    for path in (traces_dir / "classifiers").glob("*/results.json"):
         tag = path.parent.name
         try:
             with open(path) as f:
@@ -431,7 +431,7 @@ def main():
 
     results_map = load_results(cli.traces_dir)
     if not results_map:
-        print(f"No results.json files found under {cli.traces_dir}/models/")
+        print(f"No results.json files found under {cli.traces_dir}/classifiers/")
         sys.exit(1)
 
     agents = load_agents(CONFIG_PATH)
@@ -447,7 +447,7 @@ def main():
     table = make_table(results_map, agents, column_defs)
 
     suffix = "_in_domain" if cli.in_domain_only else "_main"
-    out = cli.traces_dir / "models" / f"table{suffix}.tex"
+    out = cli.traces_dir / "classifiers" / f"table{suffix}.tex"
     out.write_text(table + "\n")
     print(table)
     print(f"\nSaved: {out}")

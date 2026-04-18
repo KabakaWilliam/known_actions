@@ -251,7 +251,7 @@ def main():
     parser.add_argument(
         "--dataset", default="2wikimultihop",
         help="Dataset name used in run_open_set.sh (default: 2wikimultihop). "
-             "Selects traces/models/{dataset}_open_set/ as the source directory.",
+             "Selects traces/classifiers/{dataset}_open_set/ as the source directory.",
     )
     parser.add_argument(
         "--tags", nargs="*", default=None,
@@ -264,12 +264,12 @@ def main():
     )
     parser.add_argument(
         "--out-dir", default=None,
-        help="Output directory for PNGs (default: traces-dir/models/{dataset}_open_set/)",
+        help="Output directory for PNGs (default: traces-dir/classifiers/{dataset}_open_set/)",
     )
     args = parser.parse_args()
 
     traces_dir  = Path(args.traces_dir)
-    models_dir  = traces_dir / "models"
+    models_dir  = traces_dir / "classifiers"
     loo_dir     = models_dir / f"{args.dataset}_open_set"
 
     # Auto-discover tags if not specified

@@ -637,7 +637,7 @@ def _eval_lstm(model, seq_eval, X_eval, y_eval, return_proba: bool = False):
 def train_lstm(seq_train, X_train, y_train,
                seq_val,   X_val,   y_val,
                seq_test,  X_test,  y_test,
-               n_classes, models_dir: Path = TRACE_DIR / "models",
+               n_classes, models_dir: Path = TRACE_DIR / "classifiers",
                n_epochs=_LSTM_N_EPOCHS) -> dict:
     """Grid search over hidden_dim × dropout, pick best by val accuracy.
 
@@ -1047,7 +1047,7 @@ def train(trace_dir: Path, tag: str | None = None,
     if tag is None:
         base_names = sorted({n.rsplit("_", 1)[0] for n in ds_names["train"]})
         tag = "_".join(base_names) if base_names else "unknown"
-    models_dir = trace_dir / "models" / tag
+    models_dir = trace_dir / "classifiers" / tag
     models_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Sklearn classifiers ---

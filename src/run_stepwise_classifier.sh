@@ -33,7 +33,7 @@ run_experiment() {
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         "$PYTHON" trace_analyzer.py --traces-dir "$TRACES_DIR" --tag "$tag" --prefix-eval "$@"
         echo ""
-        echo "  Saved → $TRACES_DIR/models/$tag/results.json"
+        echo "  Saved → $TRACES_DIR/classifiers/$tag/results.json"
         echo ""
     fi
 }

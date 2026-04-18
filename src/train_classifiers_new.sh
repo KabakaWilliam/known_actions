@@ -6,7 +6,7 @@
 #   <train_dataset>_x_<ood>   — single OOD pair
 #   <train_dataset>_ood_all   — train on one dataset, OOD on all others
 #
-# Each experiment produces traces/models/<tag>/results.json with:
+# Each experiment produces traces/classifiers/<tag>/results.json with:
 #   - test_report      (in-domain test accuracy)
 #   - ood_reports      (one entry per OOD dataset)
 #   - classifier.pkl / lstm_model.pt
@@ -36,7 +36,7 @@ run_experiment() {
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         "$PYTHON" trace_analyzer.py --traces-dir "$TRACES_DIR" --tag "$tag" "$@"
         echo ""
-        echo "  Saved → $TRACES_DIR/models/$tag/"
+        echo "  Saved → $TRACES_DIR/classifiers/$tag/"
     fi
 }
 

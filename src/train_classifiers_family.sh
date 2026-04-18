@@ -5,7 +5,7 @@
 #   gpt, claude, gemini, gemma, glm, qwen3vl, qwen35, uitars, seed
 #
 # Tags mirror train_classifiers_new.sh but with a _family suffix so results
-# land in separate dirs (traces/models/wiki_family/, etc.) and don't overwrite
+# land in separate dirs (traces/classifiers/wiki_family/, etc.) and don't overwrite
 # checkpoint-level results.
 #
 # Usage:
@@ -32,7 +32,7 @@ run_experiment() {
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         "$PYTHON" trace_analyzer.py --traces-dir "$TRACES_DIR" --tag "$tag" --label-by family "$@"
         echo ""
-        echo "  Saved → $TRACES_DIR/models/$tag/"
+        echo "  Saved → $TRACES_DIR/classifiers/$tag/"
     fi
 }
 

@@ -41,8 +41,8 @@ make_table() {
             --amazon-tag "$AMAZON_TAG" \
             "$@"
         # Rename output so multiple runs don't overwrite each other
-        local src="$TRACES_DIR/models/table_main.tex"
-        local dst="$TRACES_DIR/models/table_${tag}.tex"
+        local src="$TRACES_DIR/classifiers/table_main.tex"
+        local dst="$TRACES_DIR/classifiers/table_${tag}.tex"
         [[ "$src" != "$dst" ]] && mv "$src" "$dst"
         echo ""
         echo "  Saved → $dst"
