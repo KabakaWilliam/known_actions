@@ -365,8 +365,8 @@ def load_dataset(trace_dir: Path,
 
     for path in sorted(trace_dir.rglob("*.json")):
         rel_parts = path.relative_to(trace_dir).parts
-        if rel_parts[0].startswith("models"):
-            continue  # skip results.json / classifier artefacts (models/, models_v1/, etc.)
+        if rel_parts[0].startswith("classifiers"):
+            continue  # skip results.json / classifier artefacts
         if len(rel_parts) < 2:
             warnings.warn(f"Skipping {path}: unexpected path depth")
             continue
@@ -473,6 +473,148 @@ def load_dataset(trace_dir: Path,
     if return_events:
         return {s: tuple(lists) for s, lists in buckets.items()}, ds_names
     # Always return 4-tuples (drop raw_events), but keep "open_set" in the dict
+    return {s: tuple(lists[:4]) for s, lists in buckets.items()}, ds_names
+
+
+def load_from_hub(
+    hf_repo: str,
+    train_datasets: list[str] | None = None,
+    ood_datasets: list[str] | None = None,
+    agents: list[str] | None = None,
+    open_set_agents: list[str] | None = None,
+    resplit_datasets: list[str] | None = None,
+    resplit_fracs: tuple[float, float, float] = (0.5, 0.25, 0.25),
+    resplit_seed: int = 42,
+    resplit_n_per_agent: int | None = None,
+    return_events: bool = False,
+    label_by: str = "agent",
+    token: str | None = None,
+) -> tuple[dict[str, tuple], dict[str, set]]:
+    """Load episodes from a HuggingFace dataset repo; returns same structure as load_dataset()."""
+    from datasets import load_dataset as hf_load
+
+    _open_set_agents = set(open_set_agents or [])
+    _family_map      = _load_family_map() if label_by == "family" else {}
+    _resplit         = set(resplit_datasets or [])
+
+    buckets: dict[str, tuple[list, list, list, list, list]] = {
+        "train":    ([], [], [], [], []),
+        "val":      ([], [], [], [], []),
+        "test":     ([], [], [], [], []),
+        "ood":      ([], [], [], [], []),
+        "open_set": ([], [], [], [], []),
+    }
+    ds_names: dict[str, set] = {"train": set(), "val": set(), "test": set(),
+                                 "ood": set(), "open_set": set()}
+    resplit_pool: list[tuple] = []
+
+    all_bases: set[str] = set(train_datasets or []) | set(ood_datasets or [])
+    if not all_bases:
+        raise ValueError("load_from_hub requires --train-datasets and/or --ood-datasets")
+
+    for base in sorted(all_bases):
+        is_ood_only = bool(ood_datasets and base in ood_datasets and
+                           (not train_datasets or base not in train_datasets))
+        is_resplit  = base in _resplit
+
+        if is_ood_only:
+            hf_splits = ["train", "val", "test", "ood"]
+        elif is_resplit:
+            hf_splits = ["test"]
+        else:
+            hf_splits = ["train", "val", "test"]
+
+        for hf_split in hf_splits:
+            try:
+                ds = hf_load(hf_repo, base, split=hf_split, token=token)
+            except Exception:
+                continue
+
+            for row in ds:
+                agent_id     = row["agent_id"]
+                dataset_name = row["dataset_name"]
+                raw_events   = json.loads(row["dom_events_json"])
+
+                episode = {
+                    "meta":         json.loads(row["meta_json"]),
+                    "dom_trace":    {"events": raw_events,
+                                     "episodeDuration": row["duration_ms"]},
+                    "verification": {"correct":      row["correct"],
+                                     "ground_truth": row["ground_truth"],
+                                     "predicted":    row["predicted_answer"]},
+                    "error":        row["error"] or None,
+                }
+
+                if agent_id in _open_set_agents:
+                    if not _is_valid_trace(episode):
+                        continue
+                    feat = extract_features(episode)
+                    seq  = extract_sequence(episode)
+                    lbl  = _family_map.get(agent_id, agent_id)
+                    buckets["open_set"][0].append(feat)
+                    buckets["open_set"][1].append(seq)
+                    buckets["open_set"][2].append(lbl)
+                    buckets["open_set"][3].append(base)
+                    buckets["open_set"][4].append(raw_events)
+                    ds_names["open_set"].add(dataset_name)
+                    continue
+
+                if agents is not None and agent_id not in agents:
+                    continue
+                if not _is_valid_trace(episode):
+                    continue
+
+                feat         = extract_features(episode)
+                seq          = extract_sequence(episode)
+                raw_agent_id = agent_id
+                lbl          = _family_map.get(raw_agent_id, raw_agent_id)
+
+                if is_ood_only or (ood_datasets and base in ood_datasets):
+                    dest = "ood"
+                elif is_resplit:
+                    resplit_pool.append((feat, seq, lbl, raw_agent_id, base, dataset_name, raw_events))
+                    continue
+                else:
+                    dest = _infer_split(dataset_name) or hf_split
+                    if dest not in buckets:
+                        continue
+
+                buckets[dest][0].append(feat)
+                buckets[dest][1].append(seq)
+                buckets[dest][2].append(lbl)
+                buckets[dest][3].append(base)
+                buckets[dest][4].append(raw_events)
+                ds_names[dest].add(dataset_name)
+
+    if resplit_pool:
+        import random as _random
+        rng = _random.Random(resplit_seed)
+        by_agent: dict[str, list] = {}
+        for item in resplit_pool:
+            by_agent.setdefault(item[3], []).append(item)
+        tr_f, va_f, _ = resplit_fracs
+        for agent_items in by_agent.values():
+            rng.shuffle(agent_items)
+            if resplit_n_per_agent is not None:
+                agent_items = agent_items[:resplit_n_per_agent]
+            n       = len(agent_items)
+            n_train = int(n * tr_f)
+            n_val   = int(n * va_f)
+            assignments = (
+                [("train", i) for i in agent_items[:n_train]] +
+                [("val",   i) for i in agent_items[n_train:n_train + n_val]] +
+                [("test",  i) for i in agent_items[n_train + n_val:]]
+            )
+            for dest, (feat, seq, lbl, _aid, base, dataset_name, raw_events) in assignments:
+                buckets[dest][0].append(feat)
+                buckets[dest][1].append(seq)
+                buckets[dest][2].append(lbl)
+                buckets[dest][3].append(base)
+                buckets[dest][4].append(raw_events)
+                ds_names[dest].add(dataset_name)
+
+    if return_events:
+        return {s: tuple(lists) for s, lists in buckets.items()}, ds_names
     return {s: tuple(lists[:4]) for s, lists in buckets.items()}, ds_names
 
 
@@ -966,14 +1108,26 @@ def train(trace_dir: Path, tag: str | None = None,
           resplit_datasets: list[str] | None = None,
           resplit_n_per_agent: int | None = None,
           prefix_eval: bool = False,
-          label_by: str = "agent") -> None:
-    splits, ds_names = load_dataset(trace_dir, train_datasets=train_datasets,
-                                    ood_datasets=ood_datasets, agents=agents,
-                                    open_set_agents=open_set_agents,
-                                    resplit_datasets=resplit_datasets,
-                                    resplit_n_per_agent=resplit_n_per_agent,
-                                    return_events=prefix_eval,
-                                    label_by=label_by)
+          label_by: str = "agent",
+          hf_repo: str | None = None,
+          hf_token: str | None = None) -> None:
+    if hf_repo:
+        splits, ds_names = load_from_hub(hf_repo, token=hf_token,
+                                         train_datasets=train_datasets,
+                                         ood_datasets=ood_datasets, agents=agents,
+                                         open_set_agents=open_set_agents,
+                                         resplit_datasets=resplit_datasets,
+                                         resplit_n_per_agent=resplit_n_per_agent,
+                                         return_events=prefix_eval,
+                                         label_by=label_by)
+    else:
+        splits, ds_names = load_dataset(trace_dir, train_datasets=train_datasets,
+                                        ood_datasets=ood_datasets, agents=agents,
+                                        open_set_agents=open_set_agents,
+                                        resplit_datasets=resplit_datasets,
+                                        resplit_n_per_agent=resplit_n_per_agent,
+                                        return_events=prefix_eval,
+                                        label_by=label_by)
     if prefix_eval:
         feat_train, seq_train, lbl_train, _,            *_ = splits["train"]
         feat_val,   seq_val,   lbl_val,   _,            *_ = splits["val"]
@@ -1393,6 +1547,11 @@ if __name__ == "__main__":
     )
     parser.add_argument("--traces-dir", type=Path, default=Path("./traces"),
                         help="Root traces directory (default: ./traces)")
+    parser.add_argument("--hf-repo", default=None,
+                        help="HuggingFace dataset repo to load traces from instead of --traces-dir, "
+                             "e.g. your-org/known-actions-traces. Requires --train-datasets.")
+    parser.add_argument("--hf-token", default=None,
+                        help="HuggingFace token for private repos (default: reads HF_TOKEN env var)")
     parser.add_argument("--tag", type=str, default=None,
                         help="Models subdirectory name. Default: auto-derived from train dataset names.")
     parser.add_argument("--train-datasets", nargs="+", default=None,
@@ -1450,10 +1609,15 @@ if __name__ == "__main__":
         family_agents = [aid for aid, fam in family_map.items() if fam in requested]
         agents = sorted(set(family_agents) | set(agents or []))
 
+    import os
+    hf_token = cli.hf_token or os.environ.get("HF_TOKEN")
+
     train(cli.traces_dir, tag=cli.tag, train_datasets=cli.train_datasets,
           ood_datasets=cli.ood_datasets, agents=agents,
           open_set_agents=cli.open_set_agents,
           resplit_datasets=cli.resplit_datasets,
           resplit_n_per_agent=cli.resplit_n_per_agent,
           prefix_eval=cli.prefix_eval,
-          label_by=cli.label_by)
+          label_by=cli.label_by,
+          hf_repo=cli.hf_repo,
+          hf_token=hf_token)
