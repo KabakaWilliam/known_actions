@@ -197,7 +197,9 @@ def plot(
                     linewidth=1.2, linestyle="--", zorder=2)
 
         ax.set_ylabel(ds_labels.get(ds, ds), fontsize=11)
-        ax.set_xlim(-0.02, 1.02)
+        all_x = [v for v in identifiability.values() if v is not None]
+        x_min = max(0.0, min(all_x) - 0.06) if all_x else 0.0
+        ax.set_xlim(x_min, 1.02)
         ax.set_ylim(-0.02, 1.02)
         ax.set_title(ds_labels.get(ds, ds).split(" ")[0], fontsize=12, fontweight="bold")
         ax.grid(True, alpha=0.3, linewidth=0.6)
