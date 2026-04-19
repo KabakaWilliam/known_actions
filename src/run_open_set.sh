@@ -17,7 +17,7 @@ set -euo pipefail
 trap 'kill 0' EXIT
 cd "$(dirname "$0")"
 
-PYTHON=/opt/anaconda/envs/dispatch/bin/python
+
 TRACES_DIR=./traces
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export CUDA_VISIBLE_DEVICES
@@ -46,7 +46,7 @@ run_loo() {
     echo "  Open-set LOO: held-out = $held_out"
     echo "  Known agents: ${known_agents[*]}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    "$PYTHON" trace_analyzer.py \
+    python trace_analyzer.py \
         --traces-dir "$TRACES_DIR" \
         --tag        "$tag" \
         --train-datasets "$DATASET" \

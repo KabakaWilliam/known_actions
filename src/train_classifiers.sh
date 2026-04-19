@@ -11,7 +11,7 @@ set -euo pipefail
 trap 'kill 0' EXIT  # kill all child processes (incl. orphaned joblib workers) on exit
 cd "$(dirname "$0")"  # always run from src/
 
-PYTHON=/opt/anaconda/envs/dispatch/bin/python
+
 TRACES_DIR=./traces
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2}"   # override: CUDA_VISIBLE_DEVICES=2 bash train_classifiers.sh
 export CUDA_VISIBLE_DEVICES
@@ -25,7 +25,7 @@ run_experiment() {
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo "  Experiment: $tag"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        "$PYTHON" trace_analyzer.py --traces-dir "$TRACES_DIR" --tag "$tag" "$@"
+        python trace_analyzer.py --traces-dir "$TRACES_DIR" --tag "$tag" "$@"
         echo ""
         echo "  Saved → $TRACES_DIR/classifiers/$tag/"
         echo "           ├── classifier.pkl"

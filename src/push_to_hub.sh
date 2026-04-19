@@ -12,7 +12,7 @@ cd "$(dirname "$0")"
 
 HF_REPO="CoffeeGitta/known-actions-traces"
 TRACES_DIR="./traces"
-PYTHON=/opt/anaconda/envs/dispatch/bin/python
+
 
 # Load .env from repo root if present (one directory up from src/)
 if [[ -f ".env" ]]; then
@@ -35,16 +35,16 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "  Step 1: Re-run verification on all traces"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 if [[ -n "$DRY_RUN" ]]; then
-    "$PYTHON" reverify.py --traces-dir "$TRACES_DIR"
+    python reverify.py --traces-dir "$TRACES_DIR"
 else
-    "$PYTHON" reverify.py --traces-dir "$TRACES_DIR" --apply
+    python reverify.py --traces-dir "$TRACES_DIR" --apply
 fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Step 2: Upload traces to HuggingFace ($HF_REPO)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-"$PYTHON" upload_to_hub.py \
+python upload_to_hub.py \
     --traces-dir "$TRACES_DIR" \
     --repo-id    "$HF_REPO" \
     --token      "$HF_TOKEN" \

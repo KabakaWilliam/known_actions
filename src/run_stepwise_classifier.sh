@@ -17,7 +17,7 @@ set -euo pipefail
 trap 'kill 0' EXIT
 cd "$(dirname "$0")"
 
-PYTHON=/opt/anaconda/envs/dispatch/bin/python
+
 TRACES_DIR=./traces
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export CUDA_VISIBLE_DEVICES
@@ -31,7 +31,7 @@ run_experiment() {
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo "  Early-ID experiment: $tag"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        "$PYTHON" trace_analyzer.py --traces-dir "$TRACES_DIR" --tag "$tag" --prefix-eval "$@"
+        python trace_analyzer.py --traces-dir "$TRACES_DIR" --tag "$tag" --prefix-eval "$@"
         echo ""
         echo "  Saved → $TRACES_DIR/classifiers/$tag/results.json"
         echo ""
