@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Heatmap of per-agent task accuracy across datasets.
+"""Connected dot plot of per-agent task accuracy across datasets.
+
+Each row is one agent. Three dots show per-dataset accuracy (colour + shape
+encoded by dataset). A thin grey line spans the min–max range, and the
+overall mean is printed to the right.
 
 Usage:
     python plot_benchmark.py
@@ -11,8 +15,9 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
+import matplotlib as mpl
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
+import matplotlib.lines as mlines
 import numpy as np
 
 _CONFIG_PATH = Path(__file__).parent / "config.yaml"
@@ -23,29 +28,61 @@ DATASET_LABELS = {
     "webgames":      "WebGames",
 }
 
-FAMILY_COLORS = {
-    "claude_4":       "#D4A853",
-    "gemini_3":       "#4285F4",
-    "gemini_3_flash": "#7BAAF7",
-    "gemma_4":        "#34A853",
-    "glm_4.6v":       "#9C5FBA",
-    "gpt_5":          "#00A67E",
-    "qwen35":         "#E8701A",
-    "qwen3vl":        "#F4B942",
-    "seed_2":         "#E53935",
-    "uitars_1.5":     "#546E7A",
+# Okabe–Ito: blue / orange / bluish-green — safe for all common colour-vision deficiencies
+DATASET_COLORS = {
+    "2wikimultihop": "#0072B2",
+    "frames":        "#E69F00",
+    "webgames":      "#009E73",
 }
+
+DATASET_MARKERS = {
+    "2wikimultihop": "o",
+    "frames":        "s",
+    "webgames":      "D",
+}
+
+# Darkened Okabe–Ito hues — readable as text on white
+FAMILY_COLORS = {
+    "gpt_5":          "#111111",
+    "claude_4":       "#C47C00",
+    "gemini_3":       "#005F9E",
+    "gemini_3_flash": "#3E8EC4",
+    "gemma_4":        "#007A57",
+    "glm_4.6v":       "#9A4080",
+    "qwen35":         "#A84000",
+    "qwen3vl":        "#8B7200",
+    "uitars_1.5":     "#484848",
+    "seed_2":         "#888888",
+}
+
+mpl.rcParams.update({
+    "font.family":       "sans-serif",
+    "font.sans-serif":   ["Helvetica Neue", "Arial", "Liberation Sans", "DejaVu Sans"],
+    "font.size":         9,
+    "axes.titlesize":    10,
+    "axes.titleweight":  "bold",
+    "axes.labelsize":    9,
+    "xtick.labelsize":   8.5,
+    "ytick.labelsize":   8.5,
+    "legend.fontsize":   8,
+    "figure.facecolor":  "white",
+    "savefig.facecolor": "white",
+    "text.color":        "#1a1a1a",
+    "axes.labelcolor":   "#1a1a1a",
+    "xtick.color":       "#555555",
+    "ytick.color":       "#1a1a1a",
+})
 
 
 def _load_config(config_path: Path = _CONFIG_PATH) -> tuple[dict, dict]:
     try:
         import yaml
-        cfg = yaml.safe_load(config_path.read_text())
+        cfg     = yaml.safe_load(config_path.read_text())
         names   = {a["agent_id"]: a.get("display_name", a["agent_id"])
                    for a in cfg.get("agents", [])}
-        families = {a["agent_id"]: a.get("family", a["agent_id"])
-                    for a in cfg.get("agents", [])}
-        return names, families
+        fams    = {a["agent_id"]: a.get("family",       a["agent_id"])
+                   for a in cfg.get("agents", [])}
+        return names, fams
     except Exception:
         return {}, {}
 
@@ -81,126 +118,119 @@ def collect(traces_dir: Path, splits: list[str] | None) -> dict:
 def plot(stats: dict, display_names: dict, families: dict, out: Path) -> None:
     datasets = list(DATASET_LABELS.keys())
 
-    # Compute overall per agent and sort descending
-    def overall(agent):
+    def overall_acc(agent: str) -> float:
         c = t = 0
         for ds in datasets:
             d = stats[agent].get(ds, {})
-            c += d.get("correct", 0)
-            t += d.get("total", 0)
+            c += d.get("correct", 0); t += d.get("total", 0)
         return c / t if t else 0.0
 
-    agents = sorted(stats.keys(), key=overall, reverse=True)
+    agents = sorted(stats.keys(), key=overall_acc, reverse=True)
+    n      = len(agents)
 
-    # Build matrix  (agents × datasets+overall)
-    col_keys = datasets + ["overall"]
-    matrix   = np.full((len(agents), len(col_keys)), np.nan)
-
-    for i, agent in enumerate(agents):
-        tc = tt = 0
-        for j, ds in enumerate(datasets):
+    # Per-agent accuracy dict
+    acc: dict[str, dict[str, float | None]] = {}
+    for agent in agents:
+        acc[agent] = {}
+        for ds in datasets:
             d = stats[agent].get(ds, {})
             c, t = d.get("correct", 0), d.get("total", 0)
-            tc += c; tt += t
-            if t:
-                matrix[i, j] = c / t
-        if tt:
-            matrix[i, -1] = tc / tt
+            acc[agent][ds] = c / t if t else None
+        acc[agent]["overall"] = overall_acc(agent) or None
 
-    # --- Figure layout ---
-    fig, axes = plt.subplots(
-        1, 2,
-        figsize=(10, 6),
-        gridspec_kw={"width_ratios": [3, 1], "wspace": 0.05},
-    )
+    # ── Figure ───────────────────────────────────────────────────────────
+    fig_h = max(4.2, n * 0.44 + 1.6)
+    fig, ax = plt.subplots(figsize=(6.8, fig_h))
 
-    col_labels = [DATASET_LABELS[d] for d in datasets]
+    # agents are listed top-to-bottom, so highest-accuracy agent is at y = n-1
+    y_pos = {agent: (n - 1 - i) for i, agent in enumerate(agents)}
 
-    # Left: per-dataset heatmap
-    ax = axes[0]
-    im = ax.imshow(matrix[:, :-1], aspect="auto", cmap="RdYlGn",
-                   vmin=0, vmax=1, interpolation="none")
+    # Alternating row shading for readability
+    for i in range(n):
+        if i % 2 == 0:
+            ax.axhspan(i - 0.5, i + 0.5, color="#f7f7f7", linewidth=0, zorder=0)
 
-    ax.set_xticks(range(len(col_labels)))
-    ax.set_xticklabels(col_labels, fontsize=11, fontweight="bold")
-    ax.set_yticks(range(len(agents)))
-    ax.set_yticklabels(
-        [display_names.get(a, a) for a in agents],
-        fontsize=9,
-    )
-    ax.tick_params(left=False, bottom=False)
-    ax.set_title("Task Accuracy per Dataset", fontsize=12, pad=10)
-
-    # Annotate cells
-    for i in range(len(agents)):
-        for j in range(len(datasets)):
-            v = matrix[i, j]
-            if not np.isnan(v):
-                color = "black" if 0.25 < v < 0.75 else "white"
-                ax.text(j, i, f"{v:.0%}", ha="center", va="center",
-                        fontsize=8, color=color)
-            else:
-                ax.text(j, i, "—", ha="center", va="center",
-                        fontsize=9, color="#aaaaaa")
-
-    # Family colour strip on the left
-    strip_w = 0.018
-    for i, agent in enumerate(agents):
-        fam   = families.get(agent, "")
-        color = FAMILY_COLORS.get(fam, "#cccccc")
-        ax.add_patch(mpatches.FancyBboxPatch(
-            (-0.48, i - 0.45), strip_w * 10, 0.9,
-            boxstyle="round,pad=0", linewidth=0,
-            facecolor=color, transform=ax.transData, clip_on=False,
-        ))
-
-    # Right: overall bar chart
-    ax2 = axes[1]
-    bar_colors = [FAMILY_COLORS.get(families.get(a, ""), "#cccccc") for a in agents]
-    overall_vals = [matrix[i, -1] if not np.isnan(matrix[i, -1]) else 0
-                    for i in range(len(agents))]
-
-    bars = ax2.barh(range(len(agents)), overall_vals, color=bar_colors,
-                    height=0.65, edgecolor="white", linewidth=0.5)
-    ax2.set_xlim(0, 1)
-    ax2.set_ylim(-0.5, len(agents) - 0.5)
-    ax2.invert_yaxis()
-    ax2.set_yticks([])
-    ax2.set_xticks([0, 0.25, 0.5, 0.75, 1.0])
-    ax2.set_xticklabels(["0%", "25%", "50%", "75%", "100%"], fontsize=8)
-    ax2.set_title("Overall", fontsize=12, pad=10)
-    ax2.axvline(0.5, color="#aaaaaa", linewidth=0.8, linestyle="--")
-    ax2.tick_params(left=False)
-    ax2.spines[["top", "right", "left"]].set_visible(False)
-
-    for i, v in enumerate(overall_vals):
-        if v > 0:
-            ax2.text(min(v + 0.02, 0.97), i, f"{v:.0%}",
-                     va="center", fontsize=8,
-                     ha="left" if v < 0.9 else "right")
-
-    # Family legend
-    seen = {}
     for agent in agents:
+        y   = y_pos[agent]
         fam = families.get(agent, "")
-        if fam and fam not in seen:
-            seen[fam] = FAMILY_COLORS.get(fam, "#cccccc")
-    legend_handles = [
-        mpatches.Patch(facecolor=c, label=f)
-        for f, c in seen.items()
+        vals = [v for ds in datasets if (v := acc[agent][ds]) is not None]
+
+        # Range spine
+        if len(vals) > 1:
+            ax.hlines(y, min(vals), max(vals),
+                      color="#cccccc", linewidth=1.8, zorder=1)
+
+        # Dataset dots
+        for ds in datasets:
+            v = acc[agent][ds]
+            if v is not None:
+                ax.scatter(v, y,
+                           color=DATASET_COLORS[ds],
+                           marker=DATASET_MARKERS[ds],
+                           s=52, zorder=3, linewidths=0)
+
+        # Overall % label on the right
+        ov = acc[agent]["overall"]
+        if ov is not None:
+            ax.text(1.045, y, f"{ov:.0%}", va="center", fontsize=7.5,
+                    color=FAMILY_COLORS.get(fam, "#555555"), fontweight="semibold",
+                    transform=ax.get_yaxis_transform())
+
+    # ── Y-axis: agent names coloured by family ────────────────────────────
+    ax.set_yticks(list(y_pos.values()))
+    ax.set_yticklabels([display_names.get(a, a) for a in agents])
+    for label, agent in zip(ax.get_yticklabels(), agents):
+        fam = families.get(agent, "")
+        label.set_color(FAMILY_COLORS.get(fam, "#333333"))
+        label.set_fontweight("semibold")
+
+    # ── X-axis ────────────────────────────────────────────────────────────
+    ax.set_xlim(-0.04, 1.04)
+    ax.set_xticks([0, 0.25, 0.5, 0.75, 1.0])
+    ax.set_xticklabels(["0%", "25%", "50%", "75%", "100%"])
+    ax.set_xlabel("Task Accuracy")
+    ax.xaxis.set_tick_params(length=3, width=0.5)
+
+    # Reference lines
+    for x in [0.25, 0.5, 0.75]:
+        ax.axvline(x, color="#e0e0e0", linewidth=0.7, zorder=0)
+
+    # ── Spines ────────────────────────────────────────────────────────────
+    ax.spines[["top", "right", "left"]].set_visible(False)
+    ax.spines["bottom"].set_color("#aaaaaa")
+    ax.spines["bottom"].set_linewidth(0.6)
+    ax.tick_params(left=False)
+    ax.set_ylim(-0.7, n - 0.3)
+
+    # ── Dataset legend (FRAMES → WebGames → 2WikiMultihop) ───────────────
+    legend_order = ["frames", "webgames", "2wikimultihop"]
+    ds_handles = [
+        mlines.Line2D([], [],
+                      color=DATASET_COLORS[ds],
+                      marker=DATASET_MARKERS[ds],
+                      linewidth=0, markersize=7,
+                      label=DATASET_LABELS[ds])
+        for ds in legend_order
     ]
-    fig.legend(handles=legend_handles, loc="lower center",
-               ncol=5, fontsize=8, frameon=False,
-               bbox_to_anchor=(0.5, -0.04))
+    ax.legend(handles=ds_handles,
+              loc="lower right",
+              fontsize=8,
+              frameon=True,
+              framealpha=0.95,
+              edgecolor="#dddddd",
+              borderpad=0.7,
+              handletextpad=0.5,
+              labelcolor="#333333")
 
-    plt.colorbar(im, ax=axes[0], fraction=0.03, pad=0.02,
-                 label="Accuracy", format=lambda x, _: f"{x:.0%}")
+    # ── "Overall" column header above the right-side % labels ────────────
+    ax.set_title("Agent Task Accuracy across Benchmarks", pad=10)
+    ax.text(1.045, 1.01, "Overall",
+            ha="center", va="bottom", fontsize=7.5, color="#888888",
+            fontweight="semibold", transform=ax.get_yaxis_transform())
 
-    fig.suptitle("Agent Task Performance", fontsize=14, fontweight="bold", y=1.01)
     plt.tight_layout()
-
     out.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out, dpi=150, bbox_inches="tight")
+    plt.savefig(out, dpi=300, bbox_inches="tight")
     print(f"Saved: {out}")
 
 

@@ -103,7 +103,7 @@ def collect_rows(traces_dir: Path) -> dict[str, dict[str, list[dict]]]:
     return data
 
 
-def push(data: dict, repo_id: str, token: str | None, dry_run: bool) -> None:
+def push(data: dict, repo_id: str, token: str | None, dry_run: bool, private: bool = True) -> None:
     from datasets import Dataset, DatasetDict
 
     total = sum(len(rows) for splits in data.values() for rows in splits.values())
@@ -124,7 +124,7 @@ def push(data: dict, repo_id: str, token: str | None, dry_run: bool) -> None:
         ds_dict.push_to_hub(
             repo_id,
             config_name=base,
-            private=True,
+            private=private,
             token=token,
         )
         print(f"    pushed {base}")
@@ -148,6 +148,11 @@ if __name__ == "__main__":
                         help="HuggingFace token (default: reads HF_TOKEN env var)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print summary of what would be uploaded without pushing")
+    visibility = parser.add_mutually_exclusive_group()
+    visibility.add_argument("--private", dest="private", action="store_true", default=True,
+                            help="Make the HuggingFace repo private (default)")
+    visibility.add_argument("--public", dest="private", action="store_false",
+                            help="Make the HuggingFace repo public")
     cli = parser.parse_args()
 
     token = cli.token or os.environ.get("HF_TOKEN")
@@ -156,4 +161,4 @@ if __name__ == "__main__":
 
     print(f"Scanning {cli.traces_dir} ...")
     data = collect_rows(cli.traces_dir)
-    push(data, cli.repo_id, token, cli.dry_run)
+    push(data, cli.repo_id, token, cli.dry_run, cli.private)

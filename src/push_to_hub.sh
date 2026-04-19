@@ -2,8 +2,10 @@
 # push_to_hub.sh — reverify all traces then upload to HuggingFace
 #
 # Usage:
-#   bash push_to_hub.sh               # reverify + upload
+#   bash push_to_hub.sh               # reverify + upload (private by default)
 #   bash push_to_hub.sh --dry-run     # reverify + show what would be uploaded
+#   bash push_to_hub.sh --public      # upload and make the repo public
+#   bash push_to_hub.sh --private     # upload and keep the repo private (default)
 #
 # Requires HF_TOKEN to be set in the environment or in a .env file at the repo root.
 
@@ -27,8 +29,11 @@ if [[ -z "${HF_TOKEN:-}" ]]; then
 fi
 
 DRY_RUN=""
+VISIBILITY="--public"
 for arg in "$@"; do
     [[ "$arg" == "--dry-run" ]] && DRY_RUN="--dry-run"
+    [[ "$arg" == "--public"  ]] && VISIBILITY="--public"
+    [[ "$arg" == "--private" ]] && VISIBILITY="--private"
 done
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -48,4 +53,5 @@ python upload_to_hub.py \
     --traces-dir "$TRACES_DIR" \
     --repo-id    "$HF_REPO" \
     --token      "$HF_TOKEN" \
+    $VISIBILITY \
     $DRY_RUN
