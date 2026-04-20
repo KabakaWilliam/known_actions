@@ -25,7 +25,7 @@ agents:
   # - agent_id: gemini_3_flash
   # - agent_id: qwen3_5_9b
   # - agent_id: claude_haiku_4_5
-  # - agent_id: seed_2_lite
+  - agent_id: seed_2_lite
   # - agent_id: gemma-4-31B-it
   # - agent_id: qwen3_5_27b
   # - agent_id: gemma_4_26B_A4B_it
@@ -40,7 +40,7 @@ agents:
   # - agent_id: gpt_5_4_mini
 
   # - agent_id: glm_4.6v_flash
-  - agent_id: claude_opus_4_6
+  # - agent_id: claude_opus_4_6
   # - agent_id: gemini_3_1
   # - agent_id: qwen3vl_30b_a3b
   # - agent_id: qwen25vl_7b
@@ -133,23 +133,23 @@ datasets:
 # #       Do NOT proceed to checkout or log in.
 
 # #   # DeepShop — OOD evaluation only (never used for training)
-  # - name: deepshop_ood
-  #   source: datasets/deepshop_ood.json
-  #   hf_dataset: deepshop
-  #   split: train
-  #   n_questions: 150
-  #   seed: 42
-  #   start_url: "https://www.amazon.com"
-  #   task_type: shop
+  - name: deepshop_ood
+    source: datasets/deepshop_ood.json
+    hf_dataset: deepshop
+    split: train
+    n_questions: 150
+    seed: 42
+    start_url: "https://www.amazon.com"
+    task_type: shop
 
   # FRAMES — Google multi-hop QA benchmark. Test split only (824 questions).
   # Uses qa.txt prompt (Wikipedia browsing agent), same as 2wikimultihop.
-  - name: frames_test
-    source: datasets/frames_test.json
-    hf_dataset: frames
-    split: test
-    # n_questions: 824   # omit to use all 824; set a lower value to cap
-    seed: 42
+  # - name: frames_test
+  #   source: datasets/frames_test.json
+  #   hf_dataset: frames
+  #   split: test
+  #   # n_questions: 824   # omit to use all 824; set a lower value to cap
+  #   seed: 42
 
 # # WebGames — interactive browser challenges (webgames.convergence.ai)
 # # 153 tasks sorted alphabetically by path; split deterministically by offset.

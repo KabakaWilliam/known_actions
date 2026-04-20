@@ -143,8 +143,8 @@ def plot(
     out: Path,
 ) -> None:
     ds_labels = {
-        "2wikimultihop": "2WikiMultihop accuracy",
-        "frames":        "FRAMES accuracy",
+        "2wikimultihop": "2wikiMultihopQA",
+        "frames":        "Accuracy",
     }
 
     # Build per-panel data — inner join on agents that have all three scores
@@ -174,11 +174,16 @@ def plot(
         # x = identifiability (F1), y = accuracy (capability)
         ax.scatter(ys, xs, c=rgba, s=90, zorder=3, edgecolors="white", linewidths=0.6)
 
+        _offsets = {
+            "gemma-4-31B-it":    (6, 6),
+            "gemma_4_26B_A4B_it": (6, -12),
+        }
         for agent, x, y in zip(agents, xs, ys):
             label = display_names.get(agent, agent)
             ax.annotate(
                 label, (y, x),
-                textcoords="offset points", xytext=(6, 3),
+                textcoords="offset points",
+                xytext=_offsets.get(agent, (6, 3)),
                 fontsize=7.5, color="#333333",
             )
 
@@ -218,13 +223,13 @@ def plot(
         if fam and fam not in seen:
             seen[fam] = FAMILY_COLORS.get(fam, "#888888")
     handles = [mpatches.Patch(facecolor=c, label=f) for f, c in seen.items()]
-    fig.legend(handles=handles, loc="lower center", ncol=5,
-               fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.06))
+    # fig.legend(handles=handles, loc="lower center", ncol=5,
+    #            fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.12))
 
-    fig.suptitle("Capability vs Identifiability", fontsize=14, fontweight="bold")
+    # fig.suptitle("Capability vs Identifiability", fontsize=14, fontweight="bold")
     plt.tight_layout()
     out.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out, dpi=150, bbox_inches="tight")
+    plt.savefig(out, dpi=300, bbox_inches="tight")
     print(f"\nSaved: {out}")
 
 

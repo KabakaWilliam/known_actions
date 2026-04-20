@@ -158,9 +158,11 @@ def build_apptainer_cmd(agent, q: dict, episode_id, output_dir: str, dataset: di
 def find_completed_counts(agent_id: str, dataset_name: str) -> dict[str, int]:
     """Return {question: n_valid_traces} for already-collected episodes.
 
-    Only counts traces where error is null (successful collection).
-    Used to skip questions that already have enough reps.
+    Counts traces that are not API-level failures and have DOM events.
+    Task-level failures (replanning limit, unclear instructions) are counted
+    as valid behavioral traces — only fatal API errors are excluded.
     """
+    _fatal = [p.lower() for p in FATAL_API_PATTERNS]
     dataset_dir = OUTPUT_DIR / agent_id / dataset_name
     if not dataset_dir.exists():
         return {}
@@ -169,10 +171,14 @@ def find_completed_counts(agent_id: str, dataset_name: str) -> dict[str, int]:
         try:
             with open(trace_file) as f:
                 trace = json.load(f)
-            if trace.get("error") is None:
-                q = (trace.get("meta") or {}).get("question")
-                if q:
-                    counts[q] += 1
+            err = (trace.get("error") or "").lower()
+            if any(p in err for p in _fatal):
+                continue
+            if not (trace.get("dom_trace") or {}).get("events"):
+                continue
+            q = (trace.get("meta") or {}).get("question")
+            if q:
+                counts[q] += 1
         except Exception:
             pass
     return dict(counts)

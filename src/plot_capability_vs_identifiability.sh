@@ -18,4 +18,5 @@ python capability_vs_identifiability.py \
     --results-json "$RESULTS_JSON" \
     --traces-dir   "$TRACES_DIR" \
     --out          "$OUT" \
+    --datasets "2wikimultihop" \
     "$@"
