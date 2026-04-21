@@ -1,22 +1,15 @@
 """
 make_tables.py — Generate publication-ready LaTeX table from trace_analyzer results.
 
+OOD columns are specified as source→target pairs.  The experiment tag is always
+derived as  {source}_ood_all  (overridable per-dataset with --tag-override).
+
 Usage:
     python make_tables.py
-    python make_tables.py --agents gpt_5_4 qwen3vl_8b uitars_7b
-    python make_tables.py --wiki-tag wiki_ood_amazon_deep
-    python make_tables.py --in-domain-only --wiki-tag wiki ##preferred with all 9 models
-
-
-Column sources (defaults):
-    2Wiki columns        : wiki_ood_amazon_deep  (test + webshop OOD + deepshop OOD)
-    Webshop columns      : webshop_ood_deepshop  (test + deepshop OOD)
-    Webshop→2Wiki column : webshop_ood_deepshop_wiki (OOD 2wiki key)
-
-Claude Opus notes:
-    - Has NO deepshop traces → marked † in 2Wiki→DeepShop and Webshop→DeepShop columns
-    - Was excluded from the webshop experiments (pre-dates its addition) →
-      marked † in Webshop, Webshop→2Wiki, Webshop→DeepShop columns
+    python make_tables.py --in-domain-only
+    python make_tables.py --ood-pairs wiki:frames wiki:webshop webshop:wiki
+    python make_tables.py --classifiers RF XGB LSTM Lasso LR
+    python make_tables.py --tag-override wiki=wiki_custom_tag
 
 Requires in LaTeX preamble:
     \\usepackage[table]{xcolor}
@@ -25,7 +18,7 @@ Requires in LaTeX preamble:
     \\definecolor{headerblue}{RGB}{189,215,238}
 
 Outputs:
-    traces/models/table_main.tex
+    traces/classifiers/table_main.tex  (or table_in_domain.tex)
 """
 
 import argparse, json, sys
@@ -40,100 +33,116 @@ except ImportError:
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
 
 # ─── Agent ID aliases ─────────────────────────────────────────────────────────
-# Some older experiments stored agent IDs under different names.
 AGENT_ALIASES: dict[str, list[str]] = {
     "gpt_5_4": ["gpt54", "gpt_5_4"],
 }
 
-# Agents with no deepshop traces (excluded from deepshop-related experiments).
-# claude_opus_4_6 has deepshop_ood traces — no longer absent.
-DEEPSHOP_ABSENT = frozenset()
-# Agents absent from webshop experiments.
-# claude_opus_4_6 has webshop train/val/test traces — no longer absent.
-WEBSHOP_ABSENT  = frozenset()
+# ─── Dataset registry ─────────────────────────────────────────────────────────
+# short_name → (latex_display, ood_report_key_in_results_json, absent_agents)
+#
+# ood_report_key is the key used inside results.json ood_reports{}:
+#   wiki uses "2wikimultihop" but the experiment tag uses "wiki_ood_all"
+DATASETS: dict[str, tuple[str, str, frozenset]] = {
+    "wiki":     ("2Wiki",    "2wikimultihop", frozenset()),
+    "frames":   ("FRAMES",   "frames",        frozenset()),
+    "webshop":  ("Webshop",  "webshop",       frozenset()),
+    "deepshop": ("DeepShop", "deepshop",      frozenset()),
+    "webgames": ("WebGames", "webgames",      frozenset()),
+}
 
-# ─── Default experiment tags ──────────────────────────────────────────────────
-WIKI_TAG_DEFAULT          = "wiki_ood_amazon_deep"
-AMAZON_TAG_DEFAULT        = "webshop_ood_deepshop"
-AMAZON_WIKI_TAG_DEFAULT   = "webshop_ood_deepshop_wiki"
-FRAMES_TAG_DEFAULT        = "frames_2_wiki"
-WIKI_FRAMES_TAG_DEFAULT   = "wiki_2_frames"
-DEEPSHOP_TAG_DEFAULT      = "deepshop_2_webshop"
-WEBGAMES_TAG_DEFAULT      = "webgames_all_ood"
+# Experiment tag suffix — tag = {dataset}{_TAG_SUFFIX}
+_TAG_SUFFIX = "_ood_all"
 
-# Short keys for OOD columns — used by --ood-cols
-OOD_COL_KEYS = [
-    "wiki_webshop", "wiki_deepshop", "wiki_frames",
-    "webshop_wiki", "webshop_deepshop",
-    "frames_wiki",
-    "deepshop_webshop",
+# Default OOD pairs shown in the full table
+_DEFAULT_OOD_PAIRS = [
+    ("wiki",     "webshop"),
+    ("wiki",     "deepshop"),
+    ("wiki",     "frames"),
+    ("webshop",  "wiki"),
+    ("webshop",  "deepshop"),
+    ("frames",   "wiki"),
+    ("deepshop", "webshop"),
 ]
 
-# ─── Classifiers shown per agent group ────────────────────────────────────────
-CLASSIFIERS = [
-    ("RandomForest", "RF"),
-    ("XGBoost",      "XGB"),
-    ("LSTM",         "LSTM"),
-]
+# ─── Classifiers registry ─────────────────────────────────────────────────────
+ALL_CLASSIFIERS: dict[str, tuple[str, str]] = {
+    "RF":    ("RandomForest", "RF"),
+    "XGB":   ("XGBoost",      "XGB"),
+    "LSTM":  ("LSTM",         "LSTM"),
+    "Lasso": ("LR_Lasso",     "Lasso"),
+    "LR":    ("LR_L2",        "LR"),
+}
+_DEFAULT_CLASSIFIERS = ["RF", "XGB", "LSTM"]
 
 # ─── Sentinels ────────────────────────────────────────────────────────────────
-_ZERO_WITH_SUPPORT = object()   # agent in experiment but classifier got 0 F1
-_DAGGER            = object()   # agent excluded / has no data in this domain
+_ZERO_WITH_SUPPORT = object()
+_DAGGER            = object()
 
 
-def build_column_defs(wiki_tag: str, amazon_tag: str, amazon_wiki_tag: str,
-                      frames_tag: str, wiki_frames_tag: str,
-                      deepshop_tag: str, webgames_tag: str) -> list:
+# ─── Column definition builder ────────────────────────────────────────────────
+
+def _experiment_tag(dataset: str, tag_overrides: dict) -> str:
+    return tag_overrides.get(dataset, f"{dataset}{_TAG_SUFFIX}")
+
+
+def build_column_defs(
+    indomain: list[str] | None = None,
+    ood_pairs: list[tuple[str, str]] | None = None,
+    tag_overrides: dict | None = None,
+) -> list:
     """
-    Return COLUMN_DEFS as 6-tuples:
+    Return column_defs as 6-tuples:
         (col_key, tag, split, ood_key, latex_header, absent_agents)
 
-    col_key: short string identifier used by --ood-cols to filter OOD columns.
-             In-domain columns always use col_key="test_*".
-
-    absent_agents: set of agent_ids that show '--‡' when their result is None.
+    indomain:   dataset short names for in-domain test columns
+                (default: all five datasets in DATASETS order)
+    ood_pairs:  list of (source, target) short names
+                (default: _DEFAULT_OOD_PAIRS)
+    tag_overrides: {dataset_short_name: custom_experiment_tag}
     """
-    return [
-        # ── In-domain (col_key="test_*", always included unless --in-domain-only
-        #    filters to only these) ────────────────────────────────────────────
-        ("test_wiki",     wiki_tag,     "test", None,
-            r"\makecell{\textbf{2Wiki} \\ \textit{(in-dom.)}}",
-            frozenset()),
-        ("test_frames",   frames_tag,   "test", None,
-            r"\makecell{\textbf{FRAMES} \\ \textit{(in-dom.)}}",
-            frozenset()),
-        ("test_webshop",  amazon_tag,   "test", None,
-            r"\makecell{\textbf{Webshop} \\ \textit{(in-dom.)}}",
-            WEBSHOP_ABSENT),
-        ("test_deepshop", deepshop_tag, "test", None,
-            r"\makecell{\textbf{DeepShop} \\ \textit{(in-dom.)}}",
-            DEEPSHOP_ABSENT),
-        ("test_webgames", webgames_tag, "test", None,
-            r"\makecell{\textbf{WebGames} \\ \textit{(in-dom.)}}",
-            frozenset()),
-        # ── OOD ───────────────────────────────────────────────────────────────
-        ("wiki_webshop",    wiki_tag,        "ood", "webshop",
-            r"\makecell{\textbf{2Wiki$\to$Webshop} \\ \textit{(OOD)}}",
-            frozenset()),
-        ("wiki_deepshop",   wiki_tag,        "ood", "deepshop",
-            r"\makecell{\textbf{2Wiki$\to$DeepShop} \\ \textit{(OOD)}}",
-            DEEPSHOP_ABSENT),
-        ("wiki_frames",     wiki_frames_tag, "ood", "frames",
-            r"\makecell{\textbf{2Wiki$\to$FRAMES} \\ \textit{(OOD)}}",
-            frozenset()),
-        ("webshop_wiki",    amazon_wiki_tag, "ood", "2wikimultihop",
-            r"\makecell{\textbf{Webshop$\to$2Wiki} \\ \textit{(OOD)}}",
-            WEBSHOP_ABSENT),
-        ("webshop_deepshop", amazon_tag,     "ood", "deepshop",
-            r"\makecell{\textbf{Webshop$\to$DeepShop} \\ \textit{(OOD)}}",
-            WEBSHOP_ABSENT | DEEPSHOP_ABSENT),
-        ("frames_wiki",     frames_tag,      "ood", "2wikimultihop",
-            r"\makecell{\textbf{FRAMES$\to$2Wiki} \\ \textit{(OOD)}}",
-            frozenset()),
-        ("deepshop_webshop", deepshop_tag,   "ood", "webshop",
-            r"\makecell{\textbf{DeepShop$\to$Webshop} \\ \textit{(OOD)}}",
-            DEEPSHOP_ABSENT),
-    ]
+    overrides = tag_overrides or {}
+    cols = []
+
+    # In-domain columns
+    for ds in (indomain if indomain is not None else list(DATASETS)):
+        disp, _, absent = DATASETS[ds]
+        tag = _experiment_tag(ds, overrides)
+        cols.append((
+            f"test_{ds}", tag, "test", None,
+            rf"\makecell{{\textbf{{{disp}}} \\ \textit{{(in-dom.)}}}}",
+            absent,
+        ))
+
+    # OOD columns
+    for src, tgt in (ood_pairs if ood_pairs is not None else _DEFAULT_OOD_PAIRS):
+        src_disp, _, src_absent = DATASETS[src]
+        tgt_disp, tgt_key, tgt_absent = DATASETS[tgt]
+        tag = _experiment_tag(src, overrides)
+        cols.append((
+            f"{src}_{tgt}", tag, "ood", tgt_key,
+            rf"\makecell{{\textbf{{{src_disp}$\to${tgt_disp}}} \\ \textit{{(OOD)}}}}",
+            src_absent | tgt_absent,
+        ))
+
+    return cols
+
+
+def parse_ood_pairs(specs: list[str]) -> list[tuple[str, str]]:
+    """Parse ['wiki:frames', 'webshop:wiki', ...] into [(src, tgt), ...]."""
+    pairs = []
+    for s in specs:
+        if ":" not in s:
+            print(f"Warning: invalid --ood-pairs entry '{s}' (expected src:tgt) — skipped")
+            continue
+        src, tgt = s.split(":", 1)
+        if src not in DATASETS:
+            print(f"Warning: unknown source dataset '{src}' in '{s}' — skipped")
+            continue
+        if tgt not in DATASETS:
+            print(f"Warning: unknown target dataset '{tgt}' in '{s}' — skipped")
+            continue
+        pairs.append((src, tgt))
+    return pairs
 
 
 # ─── Loaders ─────────────────────────────────────────────────────────────────
@@ -190,20 +199,13 @@ def macro_f1(report) -> float | None:
     return (report.get("macro avg") or {}).get("f1-score")
 
 
-def filtered_macro_f1(report, agent_ids: list) -> float | None:
-    """Recompute macro F1 from only the specified agents' per-class F1 scores."""
-    if not report or not agent_ids:
-        return macro_f1(report)
-    f1s = [
-        report[aid]["f1-score"]
-        for aid in agent_ids
-        if isinstance(report.get(aid), dict) and "f1-score" in report[aid]
-    ]
-    return sum(f1s) / len(f1s) if f1s else None
+def weighted_f1(report) -> float | None:
+    if not report:
+        return None
+    return (report.get("weighted avg") or {}).get("f1-score")
 
 
-def _resolve_agent_f1(report, agent_id: str) -> float | None:
-    """Look up agent_id in report, trying AGENT_ALIASES if the primary key is missing."""
+def _resolve_agent_entry(report, agent_id: str):
     for key in AGENT_ALIASES.get(agent_id, [agent_id]):
         entry = report.get(key)
         if isinstance(entry, dict):
@@ -213,14 +215,14 @@ def _resolve_agent_f1(report, agent_id: str) -> float | None:
 
 def agent_f1(report, agent_id: str, absent_agents: frozenset = frozenset()):
     """
-    Return the F1 value for agent_id in report, or a sentinel:
-      _DAGGER            — agent is in absent_agents and has no result (excluded by design)
-      _ZERO_WITH_SUPPORT — agent ran but got 0 F1 (classifier failure)
-      None               — no data, unknown reason
+    Return per-class F1 for agent_id, or a sentinel:
+      _DAGGER            — agent excluded by design (absent_agents)
+      _ZERO_WITH_SUPPORT — classifier ran but predicted F1 = 0
+      None               — no data
     """
     if not report:
         return _DAGGER if agent_id in absent_agents else None
-    entry = _resolve_agent_f1(report, agent_id)
+    entry = _resolve_agent_entry(report, agent_id)
     if entry is None:
         return _DAGGER if agent_id in absent_agents else None
     if not isinstance(entry, dict):
@@ -228,9 +230,7 @@ def agent_f1(report, agent_id: str, absent_agents: frozenset = frozenset()):
     if entry.get("support", 1) == 0:
         return None
     f1 = entry.get("f1-score", 0.0)
-    if f1 == 0.0:
-        return _ZERO_WITH_SUPPORT
-    return f1
+    return _ZERO_WITH_SUPPORT if f1 == 0.0 else f1
 
 
 def fmt(x) -> str:
@@ -253,9 +253,7 @@ def bold_best_per_col(rows: list) -> list:
     for c in range(len(rows[0])):
         nums = []
         for r in rows:
-            raw = r[c]
-            # strip any LaTeX markup to get the number
-            stripped = raw.replace(r"\textbf{", "").replace("}", "").split("$")[0]
+            stripped = r[c].replace(r"\textbf{", "").replace("}", "").split("$")[0]
             try:
                 nums.append(float(stripped))
             except (ValueError, TypeError):
@@ -272,10 +270,24 @@ def bold_best_per_col(rows: list) -> list:
 
 # ─── Table building ───────────────────────────────────────────────────────────
 
-def clf_rows(results_map: dict, get_f1_fn, column_defs: list) -> list:
-    """Return one formatted row per classifier, with bold applied per column."""
+def best_weighted_f1_row(results_map: dict, column_defs: list,
+                         classifiers: list) -> list[str]:
+    """For each column, return weighted avg F1 of the best classifier."""
+    row = []
+    for _, tag, split, ood_key, _, _ in column_defs:
+        best: float | None = None
+        for clf_key, _ in classifiers:
+            rep = get_report(results_map, tag, clf_key, split, ood_key)
+            val = weighted_f1(rep)
+            if val is not None and (best is None or val > best):
+                best = val
+        row.append(fmt(best))
+    return row
+
+def clf_rows(results_map: dict, get_f1_fn, column_defs: list,
+             classifiers: list) -> list:
     raw = []
-    for clf_key, _ in CLASSIFIERS:
+    for clf_key, _ in classifiers:
         row = []
         for _, tag, split, ood_key, _, absent_agents in column_defs:
             rep = get_report(results_map, tag, clf_key, split, ood_key)
@@ -284,9 +296,9 @@ def clf_rows(results_map: dict, get_f1_fn, column_defs: list) -> list:
     return bold_best_per_col(raw)
 
 
-def agent_has_results(results_map: dict, agent_id: str, column_defs: list) -> bool:
-    """Return True if the agent has at least one non-None F1 value across all columns."""
-    for clf_key, _ in CLASSIFIERS:
+def agent_has_results(results_map: dict, agent_id: str, column_defs: list,
+                      classifiers: list) -> bool:
+    for clf_key, _ in classifiers:
         for _, tag, split, ood_key, _, absent_agents in column_defs:
             if agent_id in absent_agents:
                 continue
@@ -297,20 +309,18 @@ def agent_has_results(results_map: dict, agent_id: str, column_defs: list) -> bo
     return False
 
 
-def render_group(model_label: str, rows: list, lines: list):
-    for i, ((_, clf_disp), row) in enumerate(zip(CLASSIFIERS, rows)):
+def render_group(model_label: str, rows: list, lines: list, classifiers: list):
+    for i, ((_, clf_disp), row) in enumerate(zip(classifiers, rows)):
         prefix = f"{model_label:<20}" if i == 0 else " " * 20
-        cells  = " & ".join(row)
-        lines.append(f"{prefix} & {clf_disp:<4} & {cells} \\\\")
+        lines.append(f"{prefix} & {clf_disp:<4} & {' & '.join(row)} \\\\")
 
 
-def make_table(results_map: dict, agents: list, column_defs: list) -> str:
-    n_cond   = len(column_defs)
-    n_total  = n_cond + 2   # + Model + Clf.
+def make_table(results_map: dict, agents: list, column_defs: list,
+               classifiers: list) -> str:
+    n_cond  = len(column_defs)
+    n_total = n_cond + 2
 
-    lines: list = []
-
-    lines += [
+    lines: list = [
         r"% Requires in LaTeX preamble:",
         r"% \usepackage[table]{xcolor}",
         r"% \usepackage{booktabs,makecell,colortbl}",
@@ -331,7 +341,6 @@ def make_table(results_map: dict, agents: list, column_defs: list) -> str:
         r"\toprule",
     ]
 
-    # Header
     col_headers = " & ".join(h for _, _, _, _, h, _ in column_defs)
     lines.append(r"\textbf{Model} & \textbf{Clf.} & " + col_headers + r" \\")
     lines.append(r"\midrule")
@@ -344,7 +353,7 @@ def make_table(results_map: dict, agents: list, column_defs: list) -> str:
         ("Open-Source Models", "headerblue",  open_src),
     ]:
         active = [a for a in grp_agents
-                  if agent_has_results(results_map, a["agent_id"], column_defs)]
+                  if agent_has_results(results_map, a["agent_id"], column_defs, classifiers)]
         if not active:
             continue
         lines.append(rf"\rowcolor{{{color}}}")
@@ -352,82 +361,103 @@ def make_table(results_map: dict, agents: list, column_defs: list) -> str:
             rf"\multicolumn{{{n_total}}}{{l}}{{\textbf{{\textit{{{grp_label}}}}}}}" + r" \\"
         )
         lines.append(r"\midrule")
-
         for agent in active:
             aid, disp = agent["agent_id"], agent["display_name"]
             rows = clf_rows(
                 results_map,
                 lambda rep, absent, a=aid: agent_f1(rep, a, absent),
-                column_defs,
+                column_defs, classifiers,
             )
-            render_group(disp, rows, lines)
+            render_group(disp, rows, lines, classifiers)
             lines.append(r"\midrule")
 
-    # All Models section — only include agents with actual results
-    agent_ids = [a["agent_id"] for a in agents
-                 if agent_has_results(results_map, a["agent_id"], column_defs)]
-    n_str = f" ({len(agent_ids)} models)" if agent_ids else ""
+    # All Models row — weighted avg F1 of best classifier per column
+    n_active = sum(1 for a in agents
+                   if agent_has_results(results_map, a["agent_id"], column_defs, classifiers))
+    n_str = f" ({n_active} models)" if n_active else ""
     lines.append(r"\rowcolor{headergreen}")
     lines.append(
         rf"\multicolumn{{{n_total}}}{{l}}{{\textbf{{\textit{{All Models{n_str}}}}}}}" + r" \\"
     )
     lines.append(r"\midrule")
-    rows = clf_rows(
-        results_map,
-        lambda rep, absent: filtered_macro_f1(rep, agent_ids),
-        column_defs,
-    )
-    render_group("All", rows, lines)
+    all_row = best_weighted_f1_row(results_map, column_defs, classifiers)
+    prefix  = f"{'All':<20}"
+    lines.append(f"{prefix} & {'Best':<4} & {' & '.join(all_row)} \\\\")
 
-    lines += [
-        r"\bottomrule",
-        r"\end{tabular}%",
-        r"}",
-        r"\end{table}",
-    ]
-
+    lines += [r"\bottomrule", r"\end{tabular}%", r"}", r"\end{table}"]
     return "\n".join(lines)
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
+    ds_names = list(DATASETS)
+    pair_examples = "wiki:frames webshop:wiki deepshop:webshop"
+
     parser = argparse.ArgumentParser(
         description="Generate LaTeX table from trace_analyzer results.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  python make_tables.py\n"
+            "  python make_tables.py --in-domain-only\n"
+            f"  python make_tables.py --ood-pairs {pair_examples}\n"
+            "  python make_tables.py --classifiers RF XGB LSTM Lasso LR\n"
+            "  python make_tables.py --tag-override wiki=wiki_custom frames=frames_v2\n"
+        ),
     )
     parser.add_argument("traces_dir", nargs="?", type=Path, default=Path("./traces"))
-    parser.add_argument("--agents", nargs="+", default=None, metavar="AGENT_ID")
-    parser.add_argument("--wiki-tag",         default=WIKI_TAG_DEFAULT)
-    parser.add_argument("--amazon-tag",       default=AMAZON_TAG_DEFAULT)
-    parser.add_argument("--amazon-wiki-tag",  default=AMAZON_WIKI_TAG_DEFAULT,
-                        help="Tag for the Webshop→2Wiki column "
-                             f"(default: {AMAZON_WIKI_TAG_DEFAULT})")
-    parser.add_argument("--frames-tag",       default=FRAMES_TAG_DEFAULT,
-                        help=f"Tag for FRAMES in-domain + frames_wiki OOD columns (default: {FRAMES_TAG_DEFAULT})")
-    parser.add_argument("--wiki-frames-tag",  default=WIKI_FRAMES_TAG_DEFAULT,
-                        help=f"Tag for 2Wiki→FRAMES OOD column (default: {WIKI_FRAMES_TAG_DEFAULT})")
-    parser.add_argument("--deepshop-tag",     default=DEEPSHOP_TAG_DEFAULT,
-                        help=f"Tag for DeepShop in-domain + deepshop_webshop OOD columns (default: {DEEPSHOP_TAG_DEFAULT})")
-    parser.add_argument("--webgames-tag",     default=WEBGAMES_TAG_DEFAULT,
-                        help=f"Tag for the WebGames in-domain column (default: {WEBGAMES_TAG_DEFAULT})")
+    parser.add_argument("--agents", nargs="+", default=None, metavar="AGENT_ID",
+                        help="Restrict to these agent IDs.")
+    parser.add_argument("--classifiers", nargs="+", default=_DEFAULT_CLASSIFIERS,
+                        choices=list(ALL_CLASSIFIERS), metavar="CLF",
+                        help="Classifiers to show. Choices: "
+                             + ", ".join(ALL_CLASSIFIERS)
+                             + f".  Default: {' '.join(_DEFAULT_CLASSIFIERS)}.")
     parser.add_argument("--in-domain-only", action="store_true", default=False,
-                        help="Only include in-domain (test split) columns — drops all OOD columns.")
-    parser.add_argument("--ood-cols", nargs="+", default=None, metavar="COL_KEY",
-                        choices=OOD_COL_KEYS,
-                        help="OOD columns to include. Choices: " + ", ".join(OOD_COL_KEYS) +
-                             ". Default: all. Ignored when --in-domain-only is set.")
+                        help="Include only in-domain (test split) columns.")
+    parser.add_argument("--ood-only", action="store_true", default=False,
+                        help="Include only OOD columns — drops all in-domain columns.")
+    parser.add_argument("--indomain", nargs="+", default=None, metavar="DS",
+                        choices=ds_names,
+                        help="Which datasets to show as in-domain columns "
+                             f"(default: all).  Choices: {', '.join(ds_names)}.")
+    parser.add_argument("--ood-pairs", nargs="+", default=None, metavar="SRC:TGT",
+                        help="OOD columns as source:target pairs, e.g. "
+                             f"{pair_examples}.  "
+                             f"Source/target must be one of: {', '.join(ds_names)}.  "
+                             "Default: the standard 7-pair set.")
+    parser.add_argument("--tag-override", nargs="+", default=None, metavar="DS=TAG",
+                        help="Override the experiment tag for a dataset, e.g. "
+                             "wiki=wiki_ood_v2  frames=frames_ood_v2.")
     cli = parser.parse_args()
 
-    column_defs = build_column_defs(
-        cli.wiki_tag, cli.amazon_tag, cli.amazon_wiki_tag,
-        cli.frames_tag, cli.wiki_frames_tag,
-        cli.deepshop_tag, cli.webgames_tag,
-    )
+    # Resolve tag overrides
+    tag_overrides: dict[str, str] = {}
+    for spec in (cli.tag_override or []):
+        if "=" not in spec:
+            print(f"Warning: invalid --tag-override '{spec}' (expected DS=TAG) — skipped")
+            continue
+        ds, tag = spec.split("=", 1)
+        if ds not in DATASETS:
+            print(f"Warning: unknown dataset '{ds}' in --tag-override — skipped")
+            continue
+        tag_overrides[ds] = tag
+
+    # Resolve OOD pairs
+    ood_pairs: list[tuple[str, str]] | None = None
+    if cli.ood_pairs is not None:
+        ood_pairs = parse_ood_pairs(cli.ood_pairs)
     if cli.in_domain_only:
-        column_defs = [c for c in column_defs if c[2] == "test"]
-    elif cli.ood_cols is not None:
-        col_map = {c[0]: c for c in column_defs}
-        column_defs = [col_map[k] for k in cli.ood_cols if k in col_map]
+        ood_pairs = []
+    indomain = [] if cli.ood_only else cli.indomain
+
+    classifiers = [ALL_CLASSIFIERS[name] for name in cli.classifiers]
+    column_defs = build_column_defs(
+        indomain=indomain,
+        ood_pairs=ood_pairs,
+        tag_overrides=tag_overrides,
+    )
 
     results_map = load_results(cli.traces_dir)
     if not results_map:
@@ -444,9 +474,9 @@ def main():
     if not agents:
         print("Warning: no agents to include — per-agent rows will be omitted.")
 
-    table = make_table(results_map, agents, column_defs)
+    table = make_table(results_map, agents, column_defs, classifiers)
 
-    suffix = "_in_domain" if cli.in_domain_only else "_main"
+    suffix = "_in_domain" if cli.in_domain_only else "_ood" if cli.ood_only else "_main"
     out = cli.traces_dir / "classifiers" / f"table{suffix}.tex"
     out.write_text(table + "\n")
     print(table)

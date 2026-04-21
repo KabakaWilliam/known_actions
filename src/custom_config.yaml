@@ -133,14 +133,14 @@ datasets:
 # #       Do NOT proceed to checkout or log in.
 
 # #   # DeepShop — OOD evaluation only (never used for training)
-  - name: deepshop_ood
-    source: datasets/deepshop_ood.json
-    hf_dataset: deepshop
-    split: train
-    n_questions: 150
-    seed: 42
-    start_url: "https://www.amazon.com"
-    task_type: shop
+  # - name: deepshop_ood
+  #   source: datasets/deepshop_ood.json
+  #   hf_dataset: deepshop
+  #   split: train
+  #   n_questions: 150
+  #   seed: 42
+  #   start_url: "https://www.amazon.com"
+  #   task_type: shop
 
   # FRAMES — Google multi-hop QA benchmark. Test split only (824 questions).
   # Uses qa.txt prompt (Wikipedia browsing agent), same as 2wikimultihop.
@@ -156,23 +156,23 @@ datasets:
 # # Each task has its own start_url; no dataset-level start_url needed.
 # # Prep datasets first: python prep_datasets.py --config custom_config.yaml
 # # =============================================================================
-  # - name: webgames_train
-  #   source: datasets/webgames_train.json
-  #   hf_dataset: webgames
-  #   n_questions: 100
-  #   offset: 0
-  #   task_type: webgames
+  - name: webgames_train
+    source: datasets/webgames_train.json
+    hf_dataset: webgames
+    n_questions: 100
+    offset: 0
+    task_type: webgames
 
-  # - name: webgames_val
-  #   source: datasets/webgames_val.json
-  #   hf_dataset: webgames
-  #   n_questions: 25
-  #   offset: 100
-  #   task_type: webgames
+  - name: webgames_val
+    source: datasets/webgames_val.json
+    hf_dataset: webgames
+    n_questions: 25
+    offset: 100
+    task_type: webgames
 
-  # - name: webgames_test
-  #   source: datasets/webgames_test.json
-  #   hf_dataset: webgames
-  #   n_questions: 25
-  #   offset: 125
-  #   task_type: webgames
+  - name: webgames_test
+    source: datasets/webgames_test.json
+    hf_dataset: webgames
+    n_questions: 25
+    offset: 125
+    task_type: webgames
