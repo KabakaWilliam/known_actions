@@ -51,7 +51,8 @@ DATASETS: dict[str, tuple[str, str, frozenset]] = {
 }
 
 # Experiment tag suffix — tag = {dataset}{_TAG_SUFFIX}
-_TAG_SUFFIX = "_ood_all"
+_TAG_SUFFIX        = "_ood_all"
+_FAMILY_TAG_SUFFIX = "_family_ood_all"
 
 # Default OOD pairs shown in the full table
 _DEFAULT_OOD_PAIRS = [
@@ -81,14 +82,16 @@ _DAGGER            = object()
 
 # ─── Column definition builder ────────────────────────────────────────────────
 
-def _experiment_tag(dataset: str, tag_overrides: dict) -> str:
-    return tag_overrides.get(dataset, f"{dataset}{_TAG_SUFFIX}")
+def _experiment_tag(dataset: str, tag_overrides: dict, family: bool = False) -> str:
+    suffix = _FAMILY_TAG_SUFFIX if family else _TAG_SUFFIX
+    return tag_overrides.get(dataset, f"{dataset}{suffix}")
 
 
 def build_column_defs(
     indomain: list[str] | None = None,
     ood_pairs: list[tuple[str, str]] | None = None,
     tag_overrides: dict | None = None,
+    family: bool = False,
 ) -> list:
     """
     Return column_defs as 6-tuples:
@@ -106,7 +109,7 @@ def build_column_defs(
     # In-domain columns
     for ds in (indomain if indomain is not None else list(DATASETS)):
         disp, _, absent = DATASETS[ds]
-        tag = _experiment_tag(ds, overrides)
+        tag = _experiment_tag(ds, overrides, family=family)
         cols.append((
             f"test_{ds}", tag, "test", None,
             rf"\makecell{{\textbf{{{disp}}} \\ \textit{{(in-dom.)}}}}",
@@ -117,7 +120,7 @@ def build_column_defs(
     for src, tgt in (ood_pairs if ood_pairs is not None else _DEFAULT_OOD_PAIRS):
         src_disp, _, src_absent = DATASETS[src]
         tgt_disp, tgt_key, tgt_absent = DATASETS[tgt]
-        tag = _experiment_tag(src, overrides)
+        tag = _experiment_tag(src, overrides, family=family)
         cols.append((
             f"{src}_{tgt}", tag, "ood", tgt_key,
             rf"\makecell{{\textbf{{{src_disp}$\to${tgt_disp}}} \\ \textit{{(OOD)}}}}",
@@ -157,6 +160,25 @@ def load_results(traces_dir: Path) -> dict:
         except Exception as e:
             print(f"Warning: could not load {path}: {e}")
     return results_map
+
+
+def load_families(config_path: Path) -> list:
+    """Return unique model families from config.yaml, preserving proprietary-first order."""
+    if not _YAML or not config_path.exists():
+        return []
+    with open(config_path) as f:
+        cfg = _yaml.safe_load(f)
+    seen: dict[str, dict] = {}
+    for a in cfg.get("agents", []):
+        fam = a.get("family")
+        if not fam or fam in seen:
+            continue
+        seen[fam] = {
+            "agent_id":     fam,
+            "display_name": fam.replace("_", " ").title(),
+            "source":       a.get("source", "open"),
+        }
+    return sorted(seen.values(), key=lambda x: 0 if x["source"] == "proprietary" else 1)
 
 
 def load_agents(config_path: Path) -> list:
@@ -430,6 +452,9 @@ def main():
     parser.add_argument("--tag-override", nargs="+", default=None, metavar="DS=TAG",
                         help="Override the experiment tag for a dataset, e.g. "
                              "wiki=wiki_ood_v2  frames=frames_ood_v2.")
+    parser.add_argument("--family", action="store_true", default=False,
+                        help="Use family-level classification results "
+                             "(dirs named *_family_ood_all; rows are model families).")
     cli = parser.parse_args()
 
     # Resolve tag overrides
@@ -457,6 +482,7 @@ def main():
         indomain=indomain,
         ood_pairs=ood_pairs,
         tag_overrides=tag_overrides,
+        family=cli.family,
     )
 
     results_map = load_results(cli.traces_dir)
@@ -464,19 +490,22 @@ def main():
         print(f"No results.json files found under {cli.traces_dir}/classifiers/")
         sys.exit(1)
 
-    agents = load_agents(CONFIG_PATH)
+    agents = load_families(CONFIG_PATH) if cli.family else load_agents(CONFIG_PATH)
     if cli.agents is not None:
         requested = set(cli.agents)
         agents = [a for a in agents if a["agent_id"] in requested]
         missing = requested - {a["agent_id"] for a in agents}
         if missing:
-            print(f"Warning: agents not in config.yaml: {sorted(missing)}")
+            label = "families" if cli.family else "agents"
+            print(f"Warning: {label} not in config.yaml: {sorted(missing)}")
     if not agents:
         print("Warning: no agents to include — per-agent rows will be omitted.")
 
     table = make_table(results_map, agents, column_defs, classifiers)
 
     suffix = "_in_domain" if cli.in_domain_only else "_ood" if cli.ood_only else "_main"
+    if cli.family:
+        suffix = "_family" + suffix
     out = cli.traces_dir / "classifiers" / f"table{suffix}.tex"
     out.write_text(table + "\n")
     print(table)

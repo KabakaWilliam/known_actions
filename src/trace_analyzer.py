@@ -1474,6 +1474,7 @@ def train(trace_dir: Path, tag: str | None = None,
             "le":         le,
             "feat_names": feat_names,
             "scaler":     scaler,
+            "X_test":     X_test,
         }, f)
 
     results = {
