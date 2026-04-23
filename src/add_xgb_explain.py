@@ -43,11 +43,7 @@ def compute_shap_importances(xgb_model, X: np.ndarray, feat_names: list) -> dict
     # Multi-class: shap_values shape is (n_samples, n_features, n_classes)
     # Binary:      shap_values shape is (n_samples, n_features)
     sv = np.array(shap_values)
-    if sv.ndim == 3:
-        # average absolute SHAP over samples and classes
-        mean_abs = np.abs(sv).mean(axis=(0, 2))
-    else:
-        mean_abs = np.abs(sv).mean(axis=0)
+    mean_abs = np.abs(sv).mean(axis=(0, 2)) if sv.ndim == 3 else np.abs(sv).mean(axis=0)
 
     importance = dict(zip(feat_names, mean_abs.tolist()))
     return dict(sorted(importance.items(), key=lambda x: x[1], reverse=True))

@@ -22,7 +22,7 @@ cd "$(dirname "$0")"
 
 
 TRACES_DIR=./traces
-CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2}"
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export CUDA_VISIBLE_DEVICES
 APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-/VData/linna4335/.apptainer_cache}"
 export APPTAINER_CACHEDIR
@@ -50,169 +50,171 @@ AGENTS_NO_SEED="gpt_5_4 claude_opus_4_6 gemma-4-31B-it gemma_4_26B_A4B_it glm_4.
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ── In-domain ─────────────────────────────────────────────────────────────────
-# run_experiment wiki \
-#     --train-datasets 2wikimultihop \
-#     --agents $AGENTS_ALL
-
-# ── OOD: all others ───────────────────────────────────────────────────────────
-run_experiment wiki_ood_all \
+run_experiment wiki_xgb_ood_frames \
     --train-datasets 2wikimultihop \
-    --ood-datasets frames webshop deepshop \
-    --agents $AGENTS_ALL
+    --ood-datasets frames\
+    --agents $AGENTS_ALL \
+    --classifiers XGBoost
 
-# ── OOD: individual pairs ─────────────────────────────────────────────────────
-# run_experiment wiki_x_frames \
+# # ── OOD: all others ───────────────────────────────────────────────────────────
+# run_experiment wiki_ood_all \
 #     --train-datasets 2wikimultihop \
-#     --ood-datasets frames \
+#     --ood-datasets frames webshop deepshop \
 #     --agents $AGENTS_ALL
 
-# run_experiment wiki_x_webshop \
-#     --train-datasets 2wikimultihop \
-#     --ood-datasets webshop \
-#     --agents $AGENTS_ALL
+# # ── OOD: individual pairs ─────────────────────────────────────────────────────
+# # run_experiment wiki_x_frames \
+# #     --train-datasets 2wikimultihop \
+# #     --ood-datasets frames \
+# #     --agents $AGENTS_ALL
 
-# run_experiment wiki_x_deepshop \
-#     --train-datasets 2wikimultihop \
-#     --ood-datasets deepshop \
-#     --agents $AGENTS_ALL
+# # run_experiment wiki_x_webshop \
+# #     --train-datasets 2wikimultihop \
+# #     --ood-datasets webshop \
+# #     --agents $AGENTS_ALL
 
-# run_experiment wiki_x_webgames \
-#     --train-datasets 2wikimultihop \
-#     --ood-datasets webgames \
-#     --agents $AGENTS_NO_SEED
+# # run_experiment wiki_x_deepshop \
+# #     --train-datasets 2wikimultihop \
+# #     --ood-datasets deepshop \
+# #     --agents $AGENTS_ALL
+
+# # run_experiment wiki_x_webgames \
+# #     --train-datasets 2wikimultihop \
+# #     --ood-datasets webgames \
+# #     --agents $AGENTS_NO_SEED
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# FRAMES
-# frames only has a _test dir — pool and resplit (300 → ~150/75/75 per agent)
-# ══════════════════════════════════════════════════════════════════════════════
+# # ══════════════════════════════════════════════════════════════════════════════
+# # FRAMES
+# # frames only has a _test dir — pool and resplit (300 → ~150/75/75 per agent)
+# # ══════════════════════════════════════════════════════════════════════════════
 
-# ── In-domain ─────────────────────────────────────────────────────────────────
-# run_experiment frames \
+# # ── In-domain ─────────────────────────────────────────────────────────────────
+# # run_experiment frames \
+# #     --train-datasets frames \
+# #     --resplit-datasets frames \
+# #     --resplit-n-per-agent 300 \
+# #     --agents $AGENTS_ALL
+
+# # ── OOD: all others ───────────────────────────────────────────────────────────
+# run_experiment frames_ood_all \
 #     --train-datasets frames \
 #     --resplit-datasets frames \
 #     --resplit-n-per-agent 300 \
+#     --ood-datasets 2wikimultihop webshop deepshop \
 #     --agents $AGENTS_ALL
 
-# ── OOD: all others ───────────────────────────────────────────────────────────
-run_experiment frames_ood_all \
-    --train-datasets frames \
-    --resplit-datasets frames \
-    --resplit-n-per-agent 300 \
-    --ood-datasets 2wikimultihop webshop deepshop \
-    --agents $AGENTS_ALL
+# # ── OOD: individual pairs ─────────────────────────────────────────────────────
+# # run_experiment frames_x_wiki \
+# #     --train-datasets frames \
+# #     --resplit-datasets frames \
+# #     --resplit-n-per-agent 300 \
+# #     --ood-datasets 2wikimultihop \
+# #     --agents $AGENTS_ALL
 
-# ── OOD: individual pairs ─────────────────────────────────────────────────────
-# run_experiment frames_x_wiki \
-#     --train-datasets frames \
-#     --resplit-datasets frames \
-#     --resplit-n-per-agent 300 \
-#     --ood-datasets 2wikimultihop \
-#     --agents $AGENTS_ALL
+# # run_experiment frames_x_webshop \
+# #     --train-datasets frames \
+# #     --resplit-datasets frames \
+# #     --resplit-n-per-agent 300 \
+# #     --ood-datasets webshop \
+# #     --agents $AGENTS_ALL
 
-# run_experiment frames_x_webshop \
-#     --train-datasets frames \
-#     --resplit-datasets frames \
-#     --resplit-n-per-agent 300 \
-#     --ood-datasets webshop \
-#     --agents $AGENTS_ALL
-
-# run_experiment frames_x_deepshop \
-#     --train-datasets frames \
-#     --resplit-datasets frames \
-#     --resplit-n-per-agent 300 \
-#     --ood-datasets deepshop \
-#     --agents $AGENTS_ALL
+# # run_experiment frames_x_deepshop \
+# #     --train-datasets frames \
+# #     --resplit-datasets frames \
+# #     --resplit-n-per-agent 300 \
+# #     --ood-datasets deepshop \
+# #     --agents $AGENTS_ALL
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# WEBSHOP
-# ══════════════════════════════════════════════════════════════════════════════
+# # ══════════════════════════════════════════════════════════════════════════════
+# # WEBSHOP
+# # ══════════════════════════════════════════════════════════════════════════════
 
-# ── In-domain ─────────────────────────────────────────────────────────────────
-# run_experiment webshop \
+# # ── In-domain ─────────────────────────────────────────────────────────────────
+# # run_experiment webshop \
+# #     --train-datasets webshop \
+# #     --agents $AGENTS_ALL
+
+# # ── OOD: all others ───────────────────────────────────────────────────────────
+# run_experiment webshop_ood_all \
 #     --train-datasets webshop \
+#     --ood-datasets 2wikimultihop frames deepshop webgames \
 #     --agents $AGENTS_ALL
 
-# ── OOD: all others ───────────────────────────────────────────────────────────
-run_experiment webshop_ood_all \
-    --train-datasets webshop \
-    --ood-datasets 2wikimultihop frames deepshop webgames \
-    --agents $AGENTS_ALL
+# # ── OOD: individual pairs ─────────────────────────────────────────────────────
+# # run_experiment webshop_x_deepshop \
+# #     --train-datasets webshop \
+# #     --ood-datasets deepshop \
+# #     --agents $AGENTS_ALL
 
-# ── OOD: individual pairs ─────────────────────────────────────────────────────
-# run_experiment webshop_x_deepshop \
-#     --train-datasets webshop \
-#     --ood-datasets deepshop \
-#     --agents $AGENTS_ALL
+# # run_experiment webshop_x_wiki \
+# #     --train-datasets webshop \
+# #     --ood-datasets 2wikimultihop \
+# #     --agents $AGENTS_ALL
 
-# run_experiment webshop_x_wiki \
-#     --train-datasets webshop \
-#     --ood-datasets 2wikimultihop \
-#     --agents $AGENTS_ALL
+# # run_experiment webshop_x_frames \
+# #     --train-datasets webshop \
+# #     --ood-datasets frames \
+# #     --agents $AGENTS_ALL
 
-# run_experiment webshop_x_frames \
-#     --train-datasets webshop \
-#     --ood-datasets frames \
-#     --agents $AGENTS_ALL
-
-# run_experiment webshop_x_webgames \
-#     --train-datasets webshop \
-#     --ood-datasets webgames \
-#     --agents $AGENTS_NO_SEED
+# # run_experiment webshop_x_webgames \
+# #     --train-datasets webshop \
+# #     --ood-datasets webgames \
+# #     --agents $AGENTS_NO_SEED
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# DEEPSHOP
-# deepshop only has a _ood split — pool and resplit (150 → ~75/37/37 per agent)
-# ══════════════════════════════════════════════════════════════════════════════
+# # ══════════════════════════════════════════════════════════════════════════════
+# # DEEPSHOP
+# # deepshop only has a _ood split — pool and resplit (150 → ~75/37/37 per agent)
+# # ══════════════════════════════════════════════════════════════════════════════
 
-# ── In-domain ─────────────────────────────────────────────────────────────────
-# run_experiment deepshop \
+# # ── In-domain ─────────────────────────────────────────────────────────────────
+# # run_experiment deepshop \
+# #     --train-datasets deepshop \
+# #     --resplit-datasets deepshop \
+# #     --resplit-n-per-agent 150 \
+# #     --agents $AGENTS_ALL
+
+# # ── OOD: all others ───────────────────────────────────────────────────────────
+# run_experiment deepshop_ood_all \
 #     --train-datasets deepshop \
 #     --resplit-datasets deepshop \
 #     --resplit-n-per-agent 150 \
+#     --ood-datasets 2wikimultihop frames webshop webgames \
 #     --agents $AGENTS_ALL
 
-# ── OOD: all others ───────────────────────────────────────────────────────────
-run_experiment deepshop_ood_all \
-    --train-datasets deepshop \
-    --resplit-datasets deepshop \
-    --resplit-n-per-agent 150 \
-    --ood-datasets 2wikimultihop frames webshop webgames \
-    --agents $AGENTS_ALL
+# # ── OOD: individual pairs ─────────────────────────────────────────────────────
+# # run_experiment deepshop_x_webshop \
+# #     --train-datasets deepshop \
+# #     --resplit-datasets deepshop \
+# #     --resplit-n-per-agent 150 \
+# #     --ood-datasets webshop \
+# #     --agents $AGENTS_ALL
 
-# ── OOD: individual pairs ─────────────────────────────────────────────────────
-# run_experiment deepshop_x_webshop \
-#     --train-datasets deepshop \
-#     --resplit-datasets deepshop \
-#     --resplit-n-per-agent 150 \
-#     --ood-datasets webshop \
-#     --agents $AGENTS_ALL
-
-# run_experiment deepshop_x_wiki \
-#     --train-datasets deepshop \
-#     --resplit-datasets deepshop \
-#     --resplit-n-per-agent 150 \
-#     --ood-datasets 2wikimultihop \
-#     --agents $AGENTS_ALL
+# # run_experiment deepshop_x_wiki \
+# #     --train-datasets deepshop \
+# #     --resplit-datasets deepshop \
+# #     --resplit-n-per-agent 150 \
+# #     --ood-datasets 2wikimultihop \
+# #     --agents $AGENTS_ALL
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# WEBGAMES
-# seed_2_lite excluded — no traces yet
-# ══════════════════════════════════════════════════════════════════════════════
+# # ══════════════════════════════════════════════════════════════════════════════
+# # WEBGAMES
+# # seed_2_lite excluded — no traces yet
+# # ══════════════════════════════════════════════════════════════════════════════
 
-# ── In-domain ─────────────────────────────────────────────────────────────────
-# run_experiment webgames \
+# # ── In-domain ─────────────────────────────────────────────────────────────────
+# # run_experiment webgames \
+# #     --train-datasets webgames \
+# #     --agents $AGENTS_NO_SEED
+
+# # ── OOD: all others ───────────────────────────────────────────────────────────
+# run_experiment webgames_ood_all \
 #     --train-datasets webgames \
+#     --ood-datasets 2wikimultihop frames webshop deepshop \
 #     --agents $AGENTS_NO_SEED
-
-# ── OOD: all others ───────────────────────────────────────────────────────────
-run_experiment webgames_ood_all \
-    --train-datasets webgames \
-    --ood-datasets 2wikimultihop frames webshop deepshop \
-    --agents $AGENTS_NO_SEED
 
 # ── OOD: individual pairs ─────────────────────────────────────────────────────
 # run_experiment webgames_x_wiki \

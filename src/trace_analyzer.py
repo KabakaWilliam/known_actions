@@ -45,6 +45,11 @@ try:
     _XGBOOST_AVAILABLE = True
 except ImportError:
     _XGBOOST_AVAILABLE = False
+try:
+    import shap as _shap
+    _SHAP_AVAILABLE = True
+except ImportError:
+    _SHAP_AVAILABLE = False
 import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
@@ -71,6 +76,25 @@ def _infer_split(dataset_name: str) -> str | None:
     if dataset_name.endswith("_test"):  return "test"
     if dataset_name.endswith("_ood"):   return "ood"
     return None
+
+
+def _perturb_timestamps(episode: dict, max_delay_ms: float) -> dict:
+    """Add a cumulative random delay to each inter-event gap.
+
+    Each gap grows by U(0, max_delay_ms), so events stay in order and all
+    timing features (IEI mean/std, click IEI, dwell times) are corrupted
+    while the event sequence itself remains intact.
+    """
+    import random
+    events = episode.get("dom_trace", {}).get("events", [])
+    if len(events) < 2:
+        return episode
+    cumulative = 0.0
+    for ev in events[1:]:
+        cumulative += random.uniform(0, max_delay_ms)
+        key = "t_episode" if "t_episode" in ev else "t"
+        ev[key] = (ev.get("t_episode") or ev.get("t") or 0) + cumulative
+    return episode
 
 
 def _type_ieis(events, event_type) -> list[float]:
@@ -318,6 +342,8 @@ def load_dataset(trace_dir: Path,
                  resplit_n_per_agent: int | None = None,
                  return_events: bool = False,
                  label_by: str = "agent",
+                 random_delay_ms: float | None = None,
+                 test_random_delay_ms: float | None = None,
                  ) -> tuple[dict[str, tuple], dict[str, set]]:
     """Load all episode traces, bucketed by split.
 
@@ -384,6 +410,9 @@ def load_dataset(trace_dir: Path,
             try:
                 with open(path) as f:
                     episode = json.load(f)
+                _d = random_delay_ms or test_random_delay_ms
+                if _d:
+                    episode = _perturb_timestamps(episode, _d)
                 feat       = extract_features(episode)
                 seq        = extract_sequence(episode)
                 lbl        = episode["meta"]["agent_id"]
@@ -423,6 +452,9 @@ def load_dataset(trace_dir: Path,
                 episode = json.load(f)
             if not _is_valid_trace(episode):
                 continue
+            _d = random_delay_ms or (test_random_delay_ms if split in ("test", "ood") else None)
+            if _d:
+                episode = _perturb_timestamps(episode, _d)
             feat         = extract_features(episode)
             seq          = extract_sequence(episode)
             raw_agent_id = episode["meta"]["agent_id"]
@@ -1110,7 +1142,10 @@ def train(trace_dir: Path, tag: str | None = None,
           prefix_eval: bool = False,
           label_by: str = "agent",
           hf_repo: str | None = None,
-          hf_token: str | None = None) -> None:
+          hf_token: str | None = None,
+          classifiers: list[str] | None = None,
+          random_delay_ms: float | None = None,
+          test_random_delay_ms: float | None = None) -> None:
     if hf_repo:
         splits, ds_names = load_from_hub(hf_repo, token=hf_token,
                                          train_datasets=train_datasets,
@@ -1127,7 +1162,9 @@ def train(trace_dir: Path, tag: str | None = None,
                                         resplit_datasets=resplit_datasets,
                                         resplit_n_per_agent=resplit_n_per_agent,
                                         return_events=prefix_eval,
-                                        label_by=label_by)
+                                        label_by=label_by,
+                                        random_delay_ms=random_delay_ms,
+                                        test_random_delay_ms=test_random_delay_ms)
     if prefix_eval:
         feat_train, seq_train, lbl_train, _,            *_ = splits["train"]
         feat_val,   seq_val,   lbl_val,   _,            *_ = splits["val"]
@@ -1235,6 +1272,10 @@ def train(trace_dir: Path, tag: str | None = None,
             XGB_PARAM_DIST, False, True,   # randomised search
         ))
 
+    if classifiers:
+        _active = set(classifiers)
+        _clf_specs = [(n, *rest) for n, *rest in _clf_specs if n in _active]
+
     for name, base_estimator, param_dist, scaled, use_random in _clf_specs:
         Xtr = Xs_train if scaled else X_train
         Xvl = Xs_val   if scaled else X_val
@@ -1298,13 +1339,26 @@ def train(trace_dir: Path, tag: str | None = None,
         if name == "LR_L2":        best_lr_l2    = best_clf
         if name == "LR_Lasso":     best_lr_lasso = best_clf
 
-    importances = sorted(zip(feat_names, best_rf.feature_importances_), key=lambda x: -x[1])
-    print("\nTop 10 features (Random Forest):")
-    for fname, imp in importances[:10]:
-        print(f"  {fname:<30} {imp:.4f}")
-    clf_results["RandomForest"]["feature_importances"] = {
-        fname: float(imp) for fname, imp in importances
-    }
+    if best_rf is not None:
+        importances = sorted(zip(feat_names, best_rf.feature_importances_), key=lambda x: -x[1])
+        print("\nTop 10 features (Random Forest):")
+        for fname, imp in importances[:10]:
+            print(f"  {fname:<30} {imp:.4f}")
+        clf_results["RandomForest"]["feature_importances"] = {
+            fname: float(imp) for fname, imp in importances
+        }
+
+    if best_xgb is not None and has_test and _SHAP_AVAILABLE:
+        _explainer  = _shap.TreeExplainer(best_xgb)
+        _sv         = np.array(_explainer.shap_values(X_test))
+        _mean_abs   = np.abs(_sv).mean(axis=(0, 2)) if _sv.ndim == 3 else np.abs(_sv).mean(axis=0)
+        _shap_imp   = dict(sorted(zip(feat_names, _mean_abs.tolist()), key=lambda x: -x[1]))
+        clf_results["XGBoost"]["shap_importances"] = _shap_imp
+        print("\nTop 10 features (XGBoost SHAP):")
+        for _fname, _val in list(_shap_imp.items())[:10]:
+            print(f"  {_fname:<30} {_val:.4f}")
+    elif best_xgb is not None and not _SHAP_AVAILABLE:
+        print("[WARN] shap not installed — skipping XGBoost feature importances. pip install shap")
 
     if best_lr_l2 is not None and hasattr(best_lr_l2, "coef_"):
         coef_abs = np.abs(best_lr_l2.coef_).mean(axis=0)  # mean abs coef across classes
@@ -1327,71 +1381,74 @@ def train(trace_dir: Path, tag: str | None = None,
                 out[k] = v
         return out
 
-    final_lstm_model = None   # set in both has_val and else branches below
-    print("\nTraining LSTM ...")
-    n_classes = len(le.classes_)
-    if has_val:
-        lstm_result = train_lstm(
-            seq_train, Xs_train, list(y_train),
-            seq_val,   Xs_val,   list(y_val),
-            seq_test,  Xs_test,  list(y_test),
-            n_classes, models_dir=models_dir,
-        )
-        lstm_result["val_report"]  = remap(lstm_result["val_report"])
-        lstm_result["test_report"] = remap(lstm_result["test_report"])
-        if lstm_result["val_report"]:
-            print(f"{'LSTM':20s}  val_acc={lstm_result['val_report']['accuracy']:.3f}")
-        if lstm_result["test_report"]:
-            _lstm_auroc_str = ""
-            if _os_ready and final_lstm_model is not None:
-                _, _, _lstm_confs_te = _eval_lstm(
-                    final_lstm_model, seq_test, _X_te_scl, _y_te_enc, return_proba=True)
-                _, _, _lstm_confs_os = _eval_lstm(
-                    final_lstm_model, seq_os, _X_os_scl,
-                    np.zeros(len(seq_os), dtype=int), return_proba=True)
-                _lstm_scores = np.concatenate([_lstm_confs_te, _lstm_confs_os])
-                _lstm_auroc_str = f"  auroc={roc_auc_score(_in_labels, _lstm_scores):.3f}"
-            print(f"{'LSTM':20s}  test_acc={lstm_result['test_report']['accuracy']:.3f}{_lstm_auroc_str}")
-        # OOD / open-set eval needs a final model trained on full train set (not val-split model)
-        lstm_ood_reports = {}
-        if has_ood or (open_set_agents and feat_os):
-            final_model = _fit_lstm(seq_train, Xs_train, list(y_train), n_classes,
-                                    lstm_result["best_params"])
-            final_lstm_model = final_model
-            for oname in ood_base_names:
-                mask = ds_bases_ood_arr == oname
-                seq_ood_sub = [s for s, m in zip(seq_ood, mask) if m]
-                Xs_ood_sub  = Xs_ood[mask]
-                y_ood_sub   = [l for l, m in zip(list(y_ood), mask) if m]
-                _, ood_preds = _eval_lstm(final_model, seq_ood_sub, Xs_ood_sub, y_ood_sub)
-                lstm_ood_reports[oname] = remap(
-                    classification_report(y_ood_sub, ood_preds, output_dict=True))
-                print(f"{'LSTM':20s}  ood[{oname}]_acc={lstm_ood_reports[oname]['accuracy']:.3f}")
-        lstm_result["ood_reports"] = lstm_ood_reports
+    final_lstm_model = None
+    _train_lstm = not classifiers or "LSTM" in classifiers
+    if _train_lstm:
+        print("\nTraining LSTM ...")
+        n_classes = len(le.classes_)
+        if has_val:
+            lstm_result = train_lstm(
+                seq_train, Xs_train, list(y_train),
+                seq_val,   Xs_val,   list(y_val),
+                seq_test,  Xs_test,  list(y_test),
+                n_classes, models_dir=models_dir,
+            )
+            lstm_result["val_report"]  = remap(lstm_result["val_report"])
+            lstm_result["test_report"] = remap(lstm_result["test_report"])
+            if lstm_result["val_report"]:
+                print(f"{'LSTM':20s}  val_acc={lstm_result['val_report']['accuracy']:.3f}")
+            if lstm_result["test_report"]:
+                _lstm_auroc_str = ""
+                if _os_ready and final_lstm_model is not None:
+                    _, _, _lstm_confs_te = _eval_lstm(
+                        final_lstm_model, seq_test, _X_te_scl, _y_te_enc, return_proba=True)
+                    _, _, _lstm_confs_os = _eval_lstm(
+                        final_lstm_model, seq_os, _X_os_scl,
+                        np.zeros(len(seq_os), dtype=int), return_proba=True)
+                    _lstm_scores = np.concatenate([_lstm_confs_te, _lstm_confs_os])
+                    _lstm_auroc_str = f"  auroc={roc_auc_score(_in_labels, _lstm_scores):.3f}"
+                print(f"{'LSTM':20s}  test_acc={lstm_result['test_report']['accuracy']:.3f}{_lstm_auroc_str}")
+            # OOD / open-set eval needs a final model trained on full train set (not val-split model)
+            lstm_ood_reports = {}
+            if has_ood or (open_set_agents and feat_os):
+                final_model = _fit_lstm(seq_train, Xs_train, list(y_train), n_classes,
+                                        lstm_result["best_params"])
+                final_lstm_model = final_model
+                for oname in ood_base_names:
+                    mask = ds_bases_ood_arr == oname
+                    seq_ood_sub = [s for s, m in zip(seq_ood, mask) if m]
+                    Xs_ood_sub  = Xs_ood[mask]
+                    y_ood_sub   = [l for l, m in zip(list(y_ood), mask) if m]
+                    _, ood_preds = _eval_lstm(final_model, seq_ood_sub, Xs_ood_sub, y_ood_sub)
+                    lstm_ood_reports[oname] = remap(
+                        classification_report(y_ood_sub, ood_preds, output_dict=True))
+                    print(f"{'LSTM':20s}  ood[{oname}]_acc={lstm_ood_reports[oname]['accuracy']:.3f}")
+            lstm_result["ood_reports"] = lstm_ood_reports
+        else:
+            default_params   = {"hidden_dim": 64, "dropout": 0.3}
+            model            = _fit_lstm(seq_train, Xs_train, list(y_train), n_classes, default_params)
+            final_lstm_model = model
+            test_report    = None
+            if has_test:
+                _, test_preds = _eval_lstm(model, seq_test, Xs_test, list(y_test))
+                test_report   = remap(classification_report(list(y_test), test_preds, output_dict=True))
+            lstm_ood_reports = {}
+            if has_ood:
+                for oname in ood_base_names:
+                    mask = ds_bases_ood_arr == oname
+                    seq_ood_sub = [s for s, m in zip(seq_ood, mask) if m]
+                    Xs_ood_sub  = Xs_ood[mask]
+                    y_ood_sub   = [l for l, m in zip(list(y_ood), mask) if m]
+                    _, ood_preds = _eval_lstm(model, seq_ood_sub, Xs_ood_sub, y_ood_sub)
+                    lstm_ood_reports[oname] = remap(
+                        classification_report(y_ood_sub, ood_preds, output_dict=True))
+                    print(f"{'LSTM':20s}  ood[{oname}]_acc={lstm_ood_reports[oname]['accuracy']:.3f}")
+            torch.save(model.state_dict(), models_dir / "lstm_model.pt")
+            lstm_result = {"best_params": default_params, "val_report": None,
+                           "test_report": test_report, "ood_reports": lstm_ood_reports}
+        clf_results["LSTM"] = lstm_result
     else:
-        default_params   = {"hidden_dim": 64, "dropout": 0.3}
-        model            = _fit_lstm(seq_train, Xs_train, list(y_train), n_classes, default_params)
-        final_lstm_model = model
-        test_report    = None
-        if has_test:
-            _, test_preds = _eval_lstm(model, seq_test, Xs_test, list(y_test))
-            test_report   = remap(classification_report(list(y_test), test_preds, output_dict=True))
-        lstm_ood_reports = {}
-        if has_ood:
-            for oname in ood_base_names:
-                mask = ds_bases_ood_arr == oname
-                seq_ood_sub = [s for s, m in zip(seq_ood, mask) if m]
-                Xs_ood_sub  = Xs_ood[mask]
-                y_ood_sub   = [l for l, m in zip(list(y_ood), mask) if m]
-                _, ood_preds = _eval_lstm(model, seq_ood_sub, Xs_ood_sub, y_ood_sub)
-                lstm_ood_reports[oname] = remap(
-                    classification_report(y_ood_sub, ood_preds, output_dict=True))
-                print(f"{'LSTM':20s}  ood[{oname}]_acc={lstm_ood_reports[oname]['accuracy']:.3f}")
-        torch.save(model.state_dict(), models_dir / "lstm_model.pt")
-        lstm_result = {"best_params": default_params, "val_report": None,
-                       "test_report": test_report, "ood_reports": lstm_ood_reports}
-
-    clf_results["LSTM"] = lstm_result
+        clf_results["LSTM"] = None
 
     # --- prefix curve (early identification analysis) ---
     prefix_curve = None
@@ -1524,6 +1581,8 @@ def train(trace_dir: Path, tag: str | None = None,
             print(f"\n  {'accuracy':>20}  {'':>9}  {'':>9}  {report['accuracy']:>9.3f}  {n:>7d}")
 
     for model_name, res in clf_results.items():
+        if res is None:
+            continue
         report = res.get("test_report")
         if report:
             _print_report(model_name, "test", report)
@@ -1597,6 +1656,21 @@ if __name__ == "__main__":
                              "IDs as class labels; 'family' remaps each agent to its model family "
                              "(defined in config.yaml) — e.g. qwen3vl_8b and qwen3vl_30b_a3b both "
                              "become 'qwen3vl'. Useful for family-level fingerprinting experiments.")
+    parser.add_argument("--classifiers", nargs="+",
+                        choices=["RandomForest", "XGBoost", "LR_L2", "LR_Lasso", "LSTM"],
+                        default=None,
+                        help="Subset of classifiers to train (default: all). "
+                             "E.g. --classifiers XGBoost to train only XGBoost.")
+    parser.add_argument("--add-random-delay", type=float, default=None,
+                        metavar="MAX_MS",
+                        help="Corrupt timing features by adding a random delay drawn from "
+                             "U(0, MAX_MS) to each inter-event gap before feature extraction. "
+                             "Applied to ALL splits (train+val+test). Use for poisoning experiments.")
+    parser.add_argument("--test-random-delay", type=float, default=None,
+                        metavar="MAX_MS",
+                        help="Same as --add-random-delay but applied to TEST and OOD splits only. "
+                             "Training data is left clean. Use to simulate test-time evasion by "
+                             "an agent inserting pauses against a deployed classifier.")
     cli = parser.parse_args()
 
     # Resolve --families into agent IDs and merge with --agents
@@ -1621,4 +1695,7 @@ if __name__ == "__main__":
           prefix_eval=cli.prefix_eval,
           label_by=cli.label_by,
           hf_repo=cli.hf_repo,
-          hf_token=hf_token)
+          hf_token=hf_token,
+          classifiers=cli.classifiers,
+          random_delay_ms=cli.add_random_delay,
+          test_random_delay_ms=cli.test_random_delay)
