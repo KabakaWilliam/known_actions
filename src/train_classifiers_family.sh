@@ -45,6 +45,17 @@ AGENTS_NO_SEED="gpt_5_4 claude_opus_4_6 gemma-4-31B-it gemma_4_26B_A4B_it glm_4.
 # ══════════════════════════════════════════════════════════════════════════════
 # 2WIKIMULTIHOP
 # ══════════════════════════════════════════════════════════════════════════════
+run_experiment wiki_frames_family \
+    --train-datasets 2wikimultihop frames \
+    --resplit-datasets frames \
+    --resplit-n-per-agent 300 \
+    --ood-datasets webshop deepshop webgames \
+    --agents $AGENTS_ALL
+
+# run_experiment ws_deepshop_family \
+#     --train-datasets webshop deepshop \
+#     --ood-datasets 2wikimultihop frames webgames \
+#     --agents $AGENTS_ALL
 
 # run_experiment wiki_family \
 #     --train-datasets 2wikimultihop \
@@ -135,12 +146,12 @@ AGENTS_NO_SEED="gpt_5_4 claude_opus_4_6 gemma-4-31B-it gemma_4_26B_A4B_it glm_4.
 #     --resplit-n-per-agent 150 \
 #     --agents $AGENTS_ALL
 
-run_experiment deepshop_family_ood_all \
-    --train-datasets deepshop \
-    --resplit-datasets deepshop \
-    --resplit-n-per-agent 150 \
-    --ood-datasets 2wikimultihop frames webshop  \
-    --agents $AGENTS_ALL
+# run_experiment deepshop_family_ood_all \
+#     --train-datasets deepshop \
+#     --resplit-datasets deepshop \
+#     --resplit-n-per-agent 150 \
+#     --ood-datasets 2wikimultihop frames webshop  \
+#     --agents $AGENTS_ALL
 
 # run_experiment deepshop_family_x_webshop \
 #     --train-datasets deepshop \

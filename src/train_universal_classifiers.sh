@@ -34,7 +34,7 @@ trap 'kill 0' EXIT
 cd "$(dirname "$0")"
 
 TRACES_DIR=./traces
-CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-1}"
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-3}"
 export CUDA_VISIBLE_DEVICES
 APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-/VData/linna4335/.apptainer_cache}"
 export APPTAINER_CACHEDIR
@@ -67,6 +67,20 @@ AGENTS_NO_SEED="gpt_5_4 claude_opus_4_6 gemma-4-31B-it gemma_4_26B_A4B_it glm_4.
 #     --resplit-n-per-agent 300 \
 #     --ood-datasets deepshop webgames \
 #     --agents $AGENTS_ALL
+
+# Train: wiki  + frames  →  OOD: deepshop, webgames
+# seed_2_lite included (webgames is OOD-only; seed shows -- in that column)
+# run_experiment universal_wiki_frames \
+#     --train-datasets 2wikimultihop frames \
+#     --resplit-datasets frames \
+#     --resplit-n-per-agent 300 \
+#     --ood-datasets deepshop webgames \
+#     --agents $AGENTS_ALL
+
+run_experiment universal_ws_deepshop \
+    --train-datasets  webshop deepshop \
+    --ood-datasets 2wikimultihop frames webgames \
+    --agents $AGENTS_ALL
 
 # # Train: wiki + webshop + webgames  →  OOD: frames, deepshop
 # # seed_2_lite excluded (webgames in training; seed has no webgames traces)
@@ -110,12 +124,12 @@ AGENTS_NO_SEED="gpt_5_4 claude_opus_4_6 gemma-4-31B-it gemma_4_26B_A4B_it glm_4.
 
 # # Train: wiki + webshop + frames + webgames  →  OOD: deepshop
 # # seed_2_lite excluded (webgames in training)
-run_experiment universal_4ds_ood_deepshop \
-    --train-datasets 2wikimultihop webshop frames webgames \
-    --resplit-datasets frames \
-    --resplit-n-per-agent 300 \
-    --ood-datasets deepshop \
-    --agents $AGENTS_ALL
+# run_experiment universal_4ds_ood_deepshop \
+#     --train-datasets 2wikimultihop webshop frames webgames \
+#     --resplit-datasets frames \
+#     --resplit-n-per-agent 300 \
+#     --ood-datasets deepshop \
+#     --agents $AGENTS_ALL
 
 
 # Train: wiki + deepshop + webshop + webgames  →  OOD: deepshop
