@@ -713,7 +713,7 @@ class AgentLSTM(nn.Module):
 
 _LSTM_EMBED_DIM   = 16
 _LSTM_N_LAYERS    = 2
-_LSTM_BATCH_SIZE  = 16
+_LSTM_BATCH_SIZE  = 256
 _LSTM_LR          = 1e-3
 _LSTM_WEIGHT_DECAY = 1e-4
 _LSTM_N_EPOCHS    = 50
@@ -910,6 +910,8 @@ def eval_prefix_curve(
         """Return unscaled feature matrix."""
         feats = [extract_features(_fake_ep(ev), n_events=n_ev, t_max_ms=t_ms)
                  for ev in raw_ev_list]
+        if not feats:
+            return np.empty((0, len(feat_names)))
         return np.array([[f.get(k, 0.0) for k in feat_names] for f in feats])
 
     def _build_Xs(raw_ev_list, n_ev=None, t_ms=None):
@@ -1132,6 +1134,25 @@ def eval_open_set(
     return result
 
 
+def _subsample_train_per_agent(feat, seq, lbl, bases, n: int, rng_seed: int = 42):
+    """Randomly keep at most n training traces per agent. Val/test unchanged."""
+    from collections import defaultdict
+    idxs_by_agent: dict = defaultdict(list)
+    for i, label in enumerate(lbl):
+        idxs_by_agent[label].append(i)
+    rng = np.random.default_rng(rng_seed)
+    keep = []
+    for idxs in idxs_by_agent.values():
+        arr = np.array(idxs)
+        rng.shuffle(arr)
+        keep.extend(arr[:n].tolist())
+    keep.sort()
+    return ([feat[i] for i in keep],
+            [seq[i]  for i in keep],
+            [lbl[i]  for i in keep],
+            [bases[i] for i in keep])
+
+
 def train(trace_dir: Path, tag: str | None = None,
           train_datasets: list[str] | None = None,
           ood_datasets: list[str] | None = None,
@@ -1139,13 +1160,15 @@ def train(trace_dir: Path, tag: str | None = None,
           open_set_agents: list[str] | None = None,
           resplit_datasets: list[str] | None = None,
           resplit_n_per_agent: int | None = None,
+          n_train_per_agent: int | None = None,
           prefix_eval: bool = False,
           label_by: str = "agent",
           hf_repo: str | None = None,
           hf_token: str | None = None,
           classifiers: list[str] | None = None,
           random_delay_ms: float | None = None,
-          test_random_delay_ms: float | None = None) -> None:
+          test_random_delay_ms: float | None = None,
+          load_classifier_dir: Path | None = None) -> None:
     if hf_repo:
         splits, ds_names = load_from_hub(hf_repo, token=hf_token,
                                          train_datasets=train_datasets,
@@ -1179,6 +1202,14 @@ def train(trace_dir: Path, tag: str | None = None,
     # Open-set split: slice [:4] so this is safe whether return_events is on or off
     feat_os, seq_os, lbl_os, _ = splits["open_set"][:4]
 
+    # Learning-curve subsampling: cap training traces per agent AFTER splitting
+    # so val/test sizes are unaffected.
+    if n_train_per_agent is not None and feat_train:
+        bases_train = [None] * len(lbl_train)
+        feat_train, seq_train, lbl_train, _ = _subsample_train_per_agent(
+            feat_train, seq_train, lbl_train, bases_train, n_train_per_agent
+        )
+
     # --- guards ---
     if not feat_train:
         print("ERROR: No training episodes found. Run more episodes first.")
@@ -1193,16 +1224,31 @@ def train(trace_dir: Path, tag: str | None = None,
     if not has_test:
         warnings.warn("No test episodes found — test_report will be null.")
 
-    # --- label encoder fitted on all labels across splits ---
-    le = LabelEncoder()
-    le.fit(lbl_train + lbl_val + lbl_test + lbl_ood)
+    # --- label encoder, feat_names, scaler: fit fresh or load from a prior run ---
+    _loaded = None
+    if load_classifier_dir:
+        with open(load_classifier_dir / "classifier.pkl", "rb") as f:
+            _bundle = pickle.load(f)
+        le         = _bundle["le"]
+        feat_names = _bundle["feat_names"]
+        scaler     = _bundle["scaler"]
+        _loaded    = {
+            "RandomForest": _bundle.get("rf"),
+            "XGBoost":      _bundle.get("xgb"),
+            "LR_L2":        _bundle.get("lr_l2"),
+            "LR_Lasso":     None,   # not persisted in pkl
+        }
+    else:
+        le = LabelEncoder()
+        le.fit(lbl_train + lbl_val + lbl_test + lbl_ood)
+        feat_names = list(feat_train[0].keys())
+
     y_train = le.transform(lbl_train)
     y_val   = le.transform(lbl_val)  if lbl_val  else np.array([], dtype=int)
     y_test  = le.transform(lbl_test) if lbl_test else np.array([], dtype=int)
     y_ood   = le.transform(lbl_ood)  if lbl_ood  else np.array([], dtype=int)
 
     # --- feature matrices ---
-    feat_names = list(feat_train[0].keys())
     def to_X(feats):
         return np.array([[ep[k] for k in feat_names] for ep in feats]) if feats \
                else np.empty((0, len(feat_names)))
@@ -1216,7 +1262,8 @@ def train(trace_dir: Path, tag: str | None = None,
     ds_bases_ood_arr = np.array(ds_bases_ood)  # for numpy boolean indexing
 
     # Scaled copies for the LSTM head — RF/GB are scale-invariant so they use raw X
-    scaler    = StandardScaler().fit(X_train)
+    if not load_classifier_dir:
+        scaler = StandardScaler().fit(X_train)
     Xs_train  = scaler.transform(X_train)
     Xs_val    = scaler.transform(X_val)  if has_val  else X_val
     Xs_test   = scaler.transform(X_test) if has_test else X_test
@@ -1243,9 +1290,10 @@ def train(trace_dir: Path, tag: str | None = None,
 
     # --- Sklearn classifiers ---
     clf_results  = {}
-    best_rf      = None
-    best_xgb     = None
-    best_lr_l2   = None
+    best_rf       = None
+    best_xgb      = None
+    best_lr_l2    = None
+    best_lr_lasso = None
 
     # (name, estimator, param_dist, uses_scaled_features, use_random_search)
     # RF: exhaustive grid — small grid, parallelises well with n_jobs=-1
@@ -1267,7 +1315,7 @@ def train(trace_dir: Path, tag: str | None = None,
     if _XGBOOST_AVAILABLE:
         _clf_specs.append((
             "XGBoost",
-            XGBClassifier(tree_method="hist", device="cpu",
+            XGBClassifier(tree_method="hist", device="gpu",
                           eval_metric="mlogloss", random_state=42, verbosity=0),
             XGB_PARAM_DIST, False, True,   # randomised search
         ))
@@ -1282,11 +1330,16 @@ def train(trace_dir: Path, tag: str | None = None,
         Xte = Xs_test  if scaled else X_test
         Xod = Xs_ood   if scaled else X_ood
 
-        if has_val:
+        if _loaded is not None:
+            best_clf = _loaded.get(name)
+            if best_clf is None:
+                continue
+            best_params, val_report = {}, None
+        elif has_val:
             if use_random:
                 gs = RandomizedSearchCV(base_estimator, param_dist, n_iter=40,
                                         cv=3, scoring="accuracy",
-                                        n_jobs=-1, refit=True, random_state=42)
+                                        n_jobs=1, refit=True, random_state=42)
             else:
                 gs = GridSearchCV(base_estimator, param_dist,
                                   cv=3, scoring="accuracy", n_jobs=-1, refit=True)
@@ -1383,7 +1436,39 @@ def train(trace_dir: Path, tag: str | None = None,
 
     final_lstm_model = None
     _train_lstm = not classifiers or "LSTM" in classifiers
-    if _train_lstm:
+    if _loaded is not None and _train_lstm:
+        _lstm_pt   = load_classifier_dir / "lstm_model.pt"
+        _lstm_json = load_classifier_dir / "results.json"
+        if _lstm_pt.exists() and _lstm_json.exists():
+            _saved = json.loads(_lstm_json.read_text())
+            _bp    = (_saved.get("models", {}).get("LSTM") or {}).get("best_params", {})
+            _hd, _do = _bp.get("hidden_dim", 64), _bp.get("dropout", 0.3)
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            _model = AgentLSTM(VOCAB_SIZE, _LSTM_EMBED_DIM, _hd, _LSTM_N_LAYERS,
+                               len(le.classes_), n_rf_features=len(feat_names), dropout=_do)
+            _model.load_state_dict(torch.load(_lstm_pt, map_location=device))
+            final_lstm_model = _model.to(device)
+            lstm_result = {"best_params": _bp, "val_report": None, "ood_reports": {}}
+            if has_test:
+                _, test_preds = _eval_lstm(final_lstm_model, seq_test, Xs_test, list(y_test))
+                lstm_result["test_report"] = remap(
+                    classification_report(list(y_test), test_preds, output_dict=True))
+                print(f"{'LSTM':20s}  test_acc={lstm_result['test_report']['accuracy']:.3f}")
+            else:
+                lstm_result["test_report"] = None
+            for oname in ood_base_names:
+                mask        = ds_bases_ood_arr == oname
+                seq_ood_sub = [s for s, m in zip(seq_ood, mask) if m]
+                Xs_ood_sub  = Xs_ood[mask]
+                y_ood_sub   = [l for l, m in zip(list(y_ood), mask) if m]
+                _, ood_preds = _eval_lstm(final_lstm_model, seq_ood_sub, Xs_ood_sub, y_ood_sub)
+                lstm_result["ood_reports"][oname] = remap(
+                    classification_report(y_ood_sub, ood_preds, output_dict=True))
+                print(f"{'LSTM':20s}  ood[{oname}]_acc={lstm_result['ood_reports'][oname]['accuracy']:.3f}")
+            clf_results["LSTM"] = lstm_result
+        else:
+            clf_results["LSTM"] = None
+    elif _train_lstm:
         print("\nTraining LSTM ...")
         n_classes = len(le.classes_)
         if has_val:
@@ -1642,6 +1727,10 @@ if __name__ == "__main__":
                         help="Cap each agent's pool to N episodes before splitting "
                              "(e.g. --resplit-n-per-agent 300 → 150/75/75 per agent, "
                              "matching 2wikimultihop's budget for a fair comparison).")
+    parser.add_argument("--n-train-per-agent", type=int, default=None,
+                        metavar="N",
+                        help="Cap training traces per agent AFTER splitting (val/test unchanged). "
+                             "Used for learning-curve experiments. E.g. --n-train-per-agent 10.")
     parser.add_argument("--prefix-eval", action="store_true", default=False,
                         help="Run early-identification prefix curve analysis at eval time. "
                              "Evaluates each classifier on truncated prefixes (first N events "
@@ -1671,6 +1760,13 @@ if __name__ == "__main__":
                         help="Same as --add-random-delay but applied to TEST and OOD splits only. "
                              "Training data is left clean. Use to simulate test-time evasion by "
                              "an agent inserting pauses against a deployed classifier.")
+    parser.add_argument("--load-classifier", type=Path, default=None,
+                        metavar="DIR",
+                        help="Load a pre-trained classifier bundle from DIR (classifier.pkl + "
+                             "optional lstm_model.pt) and skip training entirely. Use with "
+                             "--test-random-delay to measure jitter impact on a deployed "
+                             "classifier without retraining. "
+                             "E.g. --load-classifier traces/classifiers/frames_ood_all")
     cli = parser.parse_args()
 
     # Resolve --families into agent IDs and merge with --agents
@@ -1692,10 +1788,12 @@ if __name__ == "__main__":
           open_set_agents=cli.open_set_agents,
           resplit_datasets=cli.resplit_datasets,
           resplit_n_per_agent=cli.resplit_n_per_agent,
+          n_train_per_agent=cli.n_train_per_agent,
           prefix_eval=cli.prefix_eval,
           label_by=cli.label_by,
           hf_repo=cli.hf_repo,
           hf_token=hf_token,
           classifiers=cli.classifiers,
           random_delay_ms=cli.add_random_delay,
-          test_random_delay_ms=cli.test_random_delay)
+          test_random_delay_ms=cli.test_random_delay,
+          load_classifier_dir=cli.load_classifier)
