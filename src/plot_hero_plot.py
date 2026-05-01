@@ -158,7 +158,9 @@ def main():
                         help="Experiment tag(s) to plot (up to 4). "
                              "Family mode requires tags containing '_family_'.")
     parser.add_argument("--out", type=Path, default=None,
-                        help="Output PNG path.")
+                        help="Output path (default: figures/{mode}_identifiability_barplots.{fmt}).")
+    parser.add_argument("--format", choices=["png", "pdf"], default="png",
+                        help="Output format (default: png). Ignored if --out specifies an extension.")
     args = parser.parse_args()
 
     tags = args.test_set_source[:4]
@@ -259,11 +261,13 @@ def main():
 
     fig.tight_layout(rect=[0.04, 0.07, 1, 1])
 
+    fmt = args.format
     if args.out:
         out = args.out
     else:
         suffix = "family" if args.mode == "family" else "identity"
-        out = Path("figures") / f"{suffix}_identifiability_barplots.png"
+        out = Path("figures") / f"{suffix}_identifiability_barplots.{fmt}"
+    out = out.with_suffix(f".{fmt}")
 
     out.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(out, dpi=300, bbox_inches="tight")
