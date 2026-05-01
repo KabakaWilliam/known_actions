@@ -12,8 +12,17 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 TRACES_DIR=./traces
+# CLASSIFIER_DIR="2wikimultihop_open_set"
+CLASSIFIER_DIR="wiki_frames_open_set"
+# CLASSIFIER_DIR="ws_deepshop_open_set"
 
 python plot_open_set_summary.py \
     --traces-dir "$TRACES_DIR" \
     --plot scatter \
+    --loo-subdir "$CLASSIFIER_DIR" \
+    "$@"
+
+python plot_open_set_summary.py \
+    --traces-dir "$TRACES_DIR" \
+    --plot cross_dataset \
     "$@"

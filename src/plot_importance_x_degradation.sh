@@ -11,6 +11,8 @@ cd "$(dirname "$0")"
 
 TRACES_DIR=./traces
 PLOT="${1:-both}"
+[[ $# -gt 0 ]] && shift
+EXTRA_ARGS=("$@")
 
 BASELINE_TAG="wiki_xgb_ood_frames"
 
@@ -36,4 +38,5 @@ python plot_importance_x_degradation.py \
     --jitter-tags  "${JITTER_TAGS[@]}" \
     --traces-dir   "$TRACES_DIR" \
     --top-n        8 \
-    --plot         "$PLOT"
+    --plot         "$PLOT" \
+    "${EXTRA_ARGS[@]}"

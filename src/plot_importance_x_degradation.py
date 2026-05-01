@@ -298,22 +298,25 @@ def main():
                         default="both",
                         help="Which panel(s) to produce (default: both).")
     parser.add_argument("--out", type=Path, default=None,
-                        help="Output PNG path. Defaults to traces/classifiers/<baseline-tag>/")
+                        help="Output path. Defaults to traces/classifiers/<baseline-tag>/")
+    parser.add_argument("--format", choices=["png", "pdf"], default="png",
+                        help="Output format (default: png). Ignored if --out specifies an extension.")
     args = parser.parse_args()
 
     out_dir = args.traces_dir / "classifiers" / args.baseline_tag
+    fmt = args.format
     shap_imp, poison_f1, jitter_f1 = build_data(
         args.traces_dir, args.baseline_tag, args.poison_tags, args.jitter_tags)
 
     if args.plot == "importance":
-        make_importance_only(shap_imp, args.top_n, args.out or out_dir / "feature_importance.png")
+        make_importance_only(shap_imp, args.top_n, args.out or out_dir / f"feature_importance.{fmt}")
     elif args.plot == "degradation":
-        make_degradation_only(poison_f1, jitter_f1, args.out or out_dir / "degradation.png")
+        make_degradation_only(poison_f1, jitter_f1, args.out or out_dir / f"degradation.{fmt}")
     else:  # both
         make_combined(shap_imp, poison_f1, jitter_f1, args.top_n,
-                      args.out or out_dir / "importance_x_degradation.png")
-        make_importance_only(shap_imp, args.top_n, out_dir / "feature_importance.png")
-        make_degradation_only(poison_f1, jitter_f1, out_dir / "degradation.png")
+                      args.out or out_dir / f"importance_x_degradation.{fmt}")
+        make_importance_only(shap_imp, args.top_n, out_dir / f"feature_importance.{fmt}")
+        make_degradation_only(poison_f1, jitter_f1, out_dir / f"degradation.{fmt}")
 
 
 if __name__ == "__main__":

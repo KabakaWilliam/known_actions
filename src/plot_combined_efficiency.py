@@ -1,44 +1,59 @@
 #!/usr/bin/env python3
 """
-plot_combined.py — Learning curve + identification speed side-by-side, XGBoost only.
+plot_combined_efficiency.py — Sample efficiency + early identification, XGBoost only.
+
+NeurIPS-style figure matching efficiency_figs.ipynb.
 
 Left panel : macro F1 vs. % of training traces (learning curve)
 Right panel: macro F1 vs. DOM events observed at test time (identification speed)
 
-Each line = one training-dataset direction, coloured consistently across both panels.
-
 Usage:
-    python plot_combined.py
-    python plot_combined.py --traces-dir /path/to/traces
-    python plot_combined.py --split ood
-    python plot_combined.py --out fig_combined.png
+    python plot_combined_efficiency.py
+    python plot_combined_efficiency.py --split ood
+    python plot_combined_efficiency.py --format pdf
+    python plot_combined_efficiency.py --out fig.pdf --format pdf
 """
 
 import argparse
 import json
-import re
 from pathlib import Path
 
-import matplotlib
-matplotlib.use("Agg")
+import matplotlib as mpl
+import matplotlib.lines as mlines
 import matplotlib.pyplot as plt
 import numpy as np
 
 CLF = "XGBoost"
 
-# One colour + marker shape per dataset, shared across both panels
+# NeurIPS-friendly defaults (mirrors efficiency_figs.ipynb)
+plt.rcParams.update({
+    "font.family":       "DejaVu Sans",
+    "font.size":         10,
+    "axes.titlesize":    12,
+    "axes.labelsize":    10.5,
+    "xtick.labelsize":   9,
+    "ytick.labelsize":   9,
+    "legend.fontsize":   9,
+    "axes.spines.top":   False,
+    "axes.spines.right": False,
+    "axes.linewidth":    0.8,
+    "grid.linewidth":    0.5,
+    "lines.linewidth":   2.0,
+})
+
+# Wong (2011) colorblind-safe palette
 DATASET_COLORS = {
-    "wiki_2_frames":       "#2196F3",   # blue
-    "frames_2_wiki":       "#FF9800",   # orange
-    "webshop_2_deepshop":  "#4CAF50",   # green
-    "deepshop_2_webshop":  "#9C27B0",   # purple
+    "wiki_2_frames":       "#0072B2",
+    "frames_2_wiki":       "#E69F00",
+    "webshop_2_deepshop":  "#009E73",
+    "deepshop_2_webshop":  "#CC79A7",
 }
 
 DATASET_MARKERS = {
-    "wiki_2_frames":       "o",   # circle
-    "frames_2_wiki":       "s",   # square
-    "webshop_2_deepshop":  "^",   # triangle
-    "deepshop_2_webshop":  "D",   # diamond
+    "wiki_2_frames":       "o",
+    "frames_2_wiki":       "s",
+    "webshop_2_deepshop":  "^",
+    "deepshop_2_webshop":  "D",
 }
 
 TAG_LABELS = {
@@ -51,7 +66,7 @@ TAG_LABELS = {
 DEFAULT_TAGS = ["wiki_2_frames", "frames_2_wiki", "webshop_2_deepshop", "deepshop_2_webshop"]
 
 
-# ── learning-curve loader (mirrors plot_learning_curve.py) ────────────────────
+# ── learning-curve loader ─────────────────────────────────────────────────────
 
 def _load_lc(lc_dir: Path, tag: str, n_agents: int, split: str) -> list[tuple[float, float]]:
     """Return [(raw_n_per_agent, f1), ...] for XGBoost on the requested split.
@@ -65,7 +80,7 @@ def _load_lc(lc_dir: Path, tag: str, n_agents: int, split: str) -> list[tuple[fl
         rpath = run_dir / "results.json"
         if not rpath.exists():
             continue
-        res = json.load(open(rpath))
+        res    = json.load(open(rpath))
         n_total = res.get("n_episodes", {}).get("train", 0)
         test_n  = res.get("n_episodes", {}).get("test", 0)
         n_per   = n_total / n_agents if n_agents else n_total
@@ -98,7 +113,7 @@ def _to_pct(pts: list[tuple[float, float]]) -> list[tuple[float, float]]:
     return [(n / max_n * 100, f1) for n, f1 in pts] if max_n else pts
 
 
-# ── identification-speed loader (mirrors plot_identification_speed.py) ─────────
+# ── identification-speed loader ───────────────────────────────────────────────
 
 def _load_speed(speed_dir: Path, tag: str, split: str) -> tuple[list[tuple[float, float]], float]:
     """Return ([(n_events, f1), ...], mean_full_trace_n) for XGBoost on the requested split."""
@@ -115,10 +130,7 @@ def _load_speed(speed_dir: Path, tag: str, split: str) -> tuple[list[tuple[float
     pts = []
     for key, entry in buckets.items():
         n = null_x if key == "null" else int(key)
-        # drop fixed-prefix points that meet or exceed mean trace length —
-        # they are nearly equivalent to the null point and would appear after
-        # the red star on the x-axis, making the line look like it continues
-        # past "full trace seen"
+        # drop fixed-prefix points that meet or exceed mean trace length
         if key != "null" and null_x and n >= null_x:
             continue
         if split == "test":
@@ -136,7 +148,7 @@ def _load_speed(speed_dir: Path, tag: str, split: str) -> tuple[list[tuple[float
     return pts, float(null_x)
 
 
-# ── main ───────────────────────────────────────────────────────────────────────
+# ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser()
@@ -146,12 +158,19 @@ def main():
     parser.add_argument("--split", choices=["test", "ood"], default="test",
                         help="Which evaluation split to plot (default: test).")
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--format", choices=["png", "pdf"], default="png",
+                        help="Output format (default: png). Ignored if --out specifies an extension.")
     args = parser.parse_args()
+
+    # Ensure fonts are properly embedded in PDFs
+    mpl.rcParams.update({"pdf.fonttype": 42, "ps.fonttype": 42})
 
     lc_dir    = args.traces_dir / "classifiers" / "learning_curve"
     speed_dir = args.traces_dir / "classifiers" / "identification_speed"
 
-    fig, (ax_lc, ax_sp) = plt.subplots(1, 2, figsize=(10, 5))
+    fig, (ax_lc, ax_sp) = plt.subplots(
+        1, 2, figsize=(7.2, 2.85), sharey=True, constrained_layout=False
+    )
 
     for tag in args.tags:
         color  = DATASET_COLORS.get(tag, "gray")
@@ -163,53 +182,73 @@ def main():
         if lc_pts:
             xs, ys = zip(*lc_pts)
             ax_lc.plot(xs, ys, marker=marker, color=color, label=label,
-                       linewidth=1.8, markersize=6)
+                       markersize=4.6, markeredgewidth=0.7)
 
         # ── identification speed ───────────────────────────────────────────────
         sp_pts, null_x = _load_speed(speed_dir, tag, args.split)
         if sp_pts:
             xs, ys = zip(*sp_pts)
             ax_sp.plot(xs, ys, marker=marker, color=color, label=label,
-                       linewidth=1.8, markersize=6)
-            # red star + drop line at full-trace (mean trace length) point
+                       markersize=4.6, markeredgewidth=0.7)
             if null_x:
                 null_y = next((y for x, y in sp_pts if x == null_x), None)
                 if null_y is not None:
-                    ax_sp.plot([null_x, null_x], [0, null_y],
-                               color="red", linewidth=0.8, linestyle="--",
-                               alpha=0.4, zorder=3)
-                    ax_sp.plot(null_x, null_y, marker="*", color="red",
-                               markersize=12, markeredgecolor="white",
-                               markeredgewidth=0.5, zorder=5)
+                    ax_sp.scatter([null_x], [null_y], marker="*", s=78,
+                                  color=color, edgecolor="white", linewidth=0.45, zorder=5)
+                    ax_sp.vlines(null_x, 0, null_y,
+                                 colors=color, linestyles=(0, (3, 2)),
+                                 linewidth=0.85, alpha=0.45, zorder=0)
 
+    # ── shared axis styling ───────────────────────────────────────────────────
+    REF_LS = (0, (1.5, 2.5))
     for ax in (ax_lc, ax_sp):
-        ax.set_ylim(0, 1)
-        ax.grid(True, alpha=0.3)
-        ax.axhline(0.8, color="gray", linestyle=":", linewidth=1, alpha=0.6)
-        ax.set_aspect("auto")
+        ax.set_ylim(0, 1.0)
+        ax.set_yticks(np.arange(0, 1.01, 0.2))
+        ax.grid(True, axis="both", alpha=0.22)
+        ax.axhline(0.8, color="0.45", linewidth=0.9, linestyle=REF_LS, zorder=0)
+        ax.text(1.5, 0.815, "0.80 F1", color="0.35", fontsize=8.5, va="bottom")
 
     ax_lc.set_xlim(0, 105)
-    ax_lc.set_xlabel("% of training traces")
-    ax_lc.set_ylabel("Macro F1 (XGBoost)")
-    ax_lc.set_title("Sample efficiency")
+    ax_lc.set_xticks([0, 20, 40, 60, 80, 100])
+    ax_lc.set_xlabel("Training traces used (%)")
+    ax_lc.set_ylabel("Macro F1")
+    ax_lc.set_title("A. Sample efficiency", loc="left", fontweight="semibold")
 
-    ax_sp.set_xlabel("Actions observed at test time")
-    ax_sp.set_ylabel("Macro F1 (XGBoost)")
-    ax_sp.set_title("Early identification")
+    ax_sp.set_xlim(0, 185)
+    ax_sp.set_xticks([0, 25, 50, 75, 100, 125, 150, 175])
+    ax_sp.set_xlabel("Observed actions at test time")
+    ax_sp.set_title("B. Early identification", loc="left", fontweight="semibold")
 
-    # shared legend: dataset lines + red star explanation
+    ax_lc.annotate(
+        "Most gains appear\nby ~1/3 of traces",
+        xy=(34, 0.71), xytext=(45, 0.50),
+        arrowprops=dict(arrowstyle="-|>", lw=0.8, color="0.35"),
+        fontsize=8.5, color="0.25", ha="left", va="center",
+    )
+
+    # ── legend ────────────────────────────────────────────────────────────────
     handles, labels = ax_lc.get_legend_handles_labels()
-    handles.append(plt.Line2D([0], [0], marker="*", color="red", linestyle="none",
-                               markersize=10, label="Full trace (mean length)"))
-    labels.append("Full trace (mean length)")
-    fig.legend(handles, labels, loc="lower center", ncol=len(args.tags) + 1,
-               bbox_to_anchor=(0.5, -0.06), frameon=False)
+    star_proxy = mlines.Line2D([0], [0], marker="*", color="none",
+                             markerfacecolor="0.25", markeredgecolor="white",
+                             markersize=9, label="Full trace")
+    handles.append(star_proxy)
+    labels.append("Full trace")
 
-    plt.tight_layout()
+    fig.legend(handles, labels,
+               loc="lower center", bbox_to_anchor=(0.5, -0.14),
+               ncol=5, frameon=False, handlelength=1.8, columnspacing=1.4)
 
-    out = args.out or (args.traces_dir / "classifiers" / "combined.png")
+    fig.text(0.5, 0.02,
+             "Dashed vertical lines mark mean full-trace length for each dataset.",
+             ha="center", va="center", fontsize=8.2, color="0.35")
+
+    fig.subplots_adjust(left=0.085, right=0.995, top=0.89, bottom=0.32, wspace=0.16)
+
+    fmt = args.format
+    out = args.out or (args.traces_dir / "classifiers" / f"combined.{fmt}")
+    out = out.with_suffix(f".{fmt}")
     out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out, dpi=300, bbox_inches="tight")
+    fig.savefig(out, dpi=350, bbox_inches="tight")
     print(f"Saved → {out}")
 
 
