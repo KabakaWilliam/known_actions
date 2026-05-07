@@ -25,8 +25,6 @@ cd "$(dirname "$0")"
 TRACES_DIR=./traces
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2}"
 export CUDA_VISIBLE_DEVICES
-APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-/VData/linna4335/.apptainer_cache}"
-export APPTAINER_CACHEDIR
 FILTER="${1:-}"
 
 # AGENTS=(gpt_5_4 gemma_4_26B_A4B_it glm_4.6v_flash qwen3_5_27b qwen3vl_8b qwen3vl_30b_a3b uitars_7b gemini_3_1)
