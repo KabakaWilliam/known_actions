@@ -6,6 +6,7 @@ Modes:
   shift   (default) Wide landscape strip: all features on x-axis, Δ SHAP on y-axis,
            shaded by category (Timing vs Action). Sorted by |delta| within each group.
   grouped Two-panel figure: grouped horizontal bars (top-N) + diverging delta bars.
+  bars    Single-panel figure: grouped horizontal bars only, no delta panel.
 
 Usage:
     python plot_shap_comparison.py \
@@ -17,6 +18,12 @@ Usage:
         --dir-a wiki_xgb_ood_frames \
         --dir-b wiki_delayed_xgb_1000ms \
         --mode grouped --top-n 20 --format pdf
+
+    python plot_shap_comparison.py \
+        --dir-a wiki_xgb_ood_frames \
+        --dir-b wiki_delayed_xgb_5000ms \
+        --label-a "Wiki — no delay" --label-b "Wiki — delayed 5000 ms" \
+        --mode bars --top-n 20 --format pdf
 """
 
 import argparse
@@ -336,6 +343,77 @@ def _plot_grouped(shap_a, shap_b, label_a, label_b, clf, top_n, sort_by, fmt, ou
     print(f"Saved → {out_path}")
 
 
+# ── Bars-only mode ────────────────────────────────────────────────────────────
+
+def _plot_bars(shap_a, shap_b, label_a, label_b, clf, top_n, sort_by, fmt, out_path):
+    all_features = sorted(set(shap_a) | set(shap_b))
+
+    if sort_by == "b":
+        ranked = sorted(all_features, key=lambda f: shap_b.get(f, 0.0), reverse=True)
+    elif sort_by == "avg":
+        ranked = sorted(all_features,
+                        key=lambda f: (shap_a.get(f, 0.0) + shap_b.get(f, 0.0)) / 2,
+                        reverse=True)
+    elif sort_by == "delta":
+        ranked = sorted(all_features,
+                        key=lambda f: abs(shap_b.get(f, 0.0) - shap_a.get(f, 0.0)),
+                        reverse=True)
+    else:  # "a"
+        ranked = sorted(all_features, key=lambda f: shap_a.get(f, 0.0), reverse=True)
+
+    features_plot = list(reversed(ranked[:top_n]))
+    vals_a  = np.array([shap_a.get(f, 0.0) for f in features_plot])
+    vals_b  = np.array([shap_b.get(f, 0.0) for f in features_plot])
+    ylabels = [_pretty(f) for f in features_plot]
+
+    n     = len(features_plot)
+    bar_h = 0.38
+    y     = np.arange(n)
+
+    fig_h = max(6, n * 0.52 + 2)
+    fig, ax = plt.subplots(figsize=(8, fig_h))
+    fig.patch.set_facecolor(BG_COLOUR)
+    ax.set_facecolor(BG_COLOUR)
+
+    ax.barh(y + bar_h / 2, vals_a, height=bar_h,
+            color=COLOUR_A, alpha=0.88, zorder=3)
+    ax.barh(y - bar_h / 2, vals_b, height=bar_h,
+            color=COLOUR_B, alpha=0.88, zorder=3)
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(ylabels, fontsize=9)
+    ax.set_xlabel("Mean |SHAP| value", fontsize=10)
+    ax.set_title(
+        f"SHAP importance: {label_a}  vs  {label_b}  ({clf}, top {top_n})",
+        fontsize=12, fontweight="bold", pad=8,
+    )
+    ax.xaxis.grid(True, linestyle="--", linewidth=0.5, alpha=0.4, zorder=0)
+    ax.set_axisbelow(True)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    ax.set_ylim(-0.5, n - 0.5)
+
+    x_max = max(vals_a.max(), vals_b.max())
+    pad   = x_max * 0.01
+    for xi, (va, vb) in enumerate(zip(vals_a, vals_b)):
+        longer_v = max(va, vb)
+        ax.text(longer_v + pad, xi, f"{longer_v:.3f}",
+                va="center", ha="left", fontsize=6.5, color="#444")
+
+    ax.legend(
+        handles=[mpatches.Patch(color=COLOUR_A, label=label_a),
+                 mpatches.Patch(color=COLOUR_B, label=label_b)],
+        loc="lower right", fontsize=9, frameon=True,
+        framealpha=1.0, edgecolor="#cccccc", fancybox=False,
+    )
+
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved → {out_path}")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
@@ -348,8 +426,8 @@ def main():
     parser.add_argument("--label-a",    default=None)
     parser.add_argument("--label-b",    default=None)
     parser.add_argument("--classifier", default="XGBoost")
-    parser.add_argument("--mode",       choices=["shift", "grouped"], default="shift",
-                        help="Plot mode: shift (default) or grouped (old 2-panel).")
+    parser.add_argument("--mode",       choices=["shift", "grouped", "bars"], default="shift",
+                        help="Plot mode: shift (default), grouped (2-panel), or bars (bars only).")
     parser.add_argument("--top-n",            type=int, default=20,
                         help="Top-N features (grouped mode only).")
     parser.add_argument("--top-n-per-group",  type=int, default=10,
@@ -373,6 +451,8 @@ def main():
         out = args.out.with_suffix(f".{fmt}")
     elif args.mode == "shift":
         out = Path("figures") / f"shap_shift_{args.dir_a}_vs_{args.dir_b}.{fmt}"
+    elif args.mode == "bars":
+        out = Path("figures") / f"shap_bars_{args.dir_a}_vs_{args.dir_b}.{fmt}"
     else:
         out = Path("figures") / f"shap_comparison_{args.dir_a}_vs_{args.dir_b}.{fmt}"
 
@@ -380,6 +460,9 @@ def main():
         _plot_shift(shap_a, shap_b, label_a, label_b, args.classifier, fmt, out,
                     top_n_per_group=args.top_n_per_group,
                     legend_title=args.legend_title)
+    elif args.mode == "bars":
+        _plot_bars(shap_a, shap_b, label_a, label_b, args.classifier,
+                   args.top_n, args.sort_by, fmt, out)
     else:
         _plot_grouped(shap_a, shap_b, label_a, label_b, args.classifier,
                       args.top_n, args.sort_by, fmt, out)
