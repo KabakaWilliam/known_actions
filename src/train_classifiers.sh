@@ -90,11 +90,11 @@ run_experiment wiki_xgb_ood_frames \
 # # ══════════════════════════════════════════════════════════════════════════════
 
 # # ── In-domain ─────────────────────────────────────────────────────────────────
-# # run_experiment frames \
-# #     --train-datasets frames \
-# #     --resplit-datasets frames \
-# #     --resplit-n-per-agent 300 \
-# #     --agents $AGENTS_ALL
+run_experiment frames \
+    --train-datasets frames \
+    --resplit-datasets frames \
+    --resplit-n-per-agent 300 \
+    --agents $AGENTS_ALL
 
 # # ── OOD: all others ───────────────────────────────────────────────────────────
 # run_experiment frames_ood_all \

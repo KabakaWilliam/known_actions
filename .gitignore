@@ -5,6 +5,7 @@ playwright-sandbox
 results_v1
 src/web_shop_goals.json
 src/datasets
+src/logos
 src/traces
 src/agent.sif
 src/__pycache__

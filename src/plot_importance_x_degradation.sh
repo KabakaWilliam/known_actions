@@ -16,21 +16,21 @@ EXTRA_ARGS=("$@")
 
 BASELINE_TAG="wiki_xgb_ood_frames"
 
-# RED line — train and test both corrupted (poisoning attack)
-POISON_TAGS=(
-    wiki_delayed_xgb_500ms
-    wiki_delayed_xgb_1000ms
-    wiki_delayed_xgb_2000ms
-    wiki_delayed_xgb_5000ms
-)
+# # RED line — train and test both corrupted (poisoning attack)
+# POISON_TAGS=(
+#     wiki_delayed_xgb_500ms
+#     wiki_delayed_xgb_1000ms
+#     wiki_delayed_xgb_2000ms
+#     wiki_delayed_xgb_5000ms
+# )
 
-# BLUE line — train clean, test corrupted (test-time evasion)
-JITTER_TAGS=(
-    wiki_jitter_test_500ms
-    wiki_jitter_test_1000ms
-    wiki_jitter_test_2000ms
-    wiki_jitter_test_5000ms
-)
+# # BLUE line — train clean, test corrupted (test-time evasion)
+# JITTER_TAGS=(
+#     wiki_jitter_test_500ms
+#     wiki_jitter_test_1000ms
+#     wiki_jitter_test_2000ms
+#     wiki_jitter_test_5000ms
+# )
 
 python plot_importance_x_degradation.py \
     --baseline-tag "$BASELINE_TAG" \

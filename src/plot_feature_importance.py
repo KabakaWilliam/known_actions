@@ -146,7 +146,8 @@ def plot_importance(tag: str, traces_dir: Path, top_n: int, out: Path | None):
         if tr.get("accuracy") is not None:
             acc_parts.append(f"{label} test F1={tr['accuracy']:.3f}")
     acc_str = "  |  " + ",  ".join(acc_parts) if acc_parts else ""
-    ax.set_title(f"Feature importance — {tag}{acc_str}", fontsize=10, pad=10)
+    # ax.set_title(f"Feature importance — {tag}{acc_str}", fontsize=10, pad=10)
+    ax.set_title(f"Feature importance — {tag}{acc_str}", pad=10, fontweight="bold")
 
     ax.legend(fontsize=9)
     ax.spines["top"].set_visible(False)
