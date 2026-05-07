@@ -48,29 +48,26 @@ Records Wikipedia and Amazon browsing traces from LLM agents and trains classifi
 
 ## Results
 
-Classifier performance evaluated on three LLM agents using behavioral features alone, without access to question text or page content.
+XGBoost classifier performance across 14 agents using behavioral features alone, without access to question text or page content.
 
-### Wikipedia (in-domain) + Amazon OOD
-
-Trained on Wikipedia (2WikiMultihopQA). Agents: gpt54, qwen3vl_8b, uitars_7b.
-
-| Model | Wiki Test Acc | Wiki Test F1 | Amazon OOD Acc | Amazon OOD F1 |
+| Train | Test | Website | Setting | Macro F1 |
 |---|---|---|---|---|
-| Random Forest | **96.8** | **96.8** | **73.6** | **73.3** |
-| Gradient Boosting | 96.4 | 96.4 | 71.1 | 71.8 |
-| LSTM | 91.9 | 91.8 | 69.4 | 69.8 |
+| 2WikiMultiHopQA | 2WikiMultiHopQA | Wikipedia | in-domain | 79.4 |
+| FRAMES | FRAMES | Wikipedia | in-domain | 75.3 |
+| WebShop | WebShop | Amazon | in-domain | 74.3 |
+| DeepShop | DeepShop | Amazon | in-domain | 72.6 |
+| 2WikiMultiHopQA | FRAMES | Wikipedia | cross-task | 41.1 |
+| FRAMES | 2WikiMultiHopQA | Wikipedia | cross-task | 49.8 |
+| 2WikiMultiHopQA + FRAMES | 2WikiMultiHopQA test | Wikipedia | pooled-site | 81.3 |
+| 2WikiMultiHopQA + FRAMES | FRAMES test | Wikipedia | pooled-site | 77.2 |
+| WebShop | DeepShop | Amazon | cross-benchmark | 52.7 |
+| DeepShop | WebShop | Amazon | cross-benchmark | 55.9 |
+| WebShop + DeepShop | WebShop test | Amazon | pooled-site | 78.8 |
+| WebShop + DeepShop | DeepShop test | Amazon | pooled-site | 70.9 |
+| Wikipedia pooled | Amazon test | cross-site | cross-site | 29.7 |
+| Amazon pooled | Wikipedia test | cross-site | cross-site | 26.0 |
 
-### Amazon (in-domain) + DeepShop OOD
-
-Trained on WebShop/Amazon shopping traces.
-
-| Model | Amazon Test Acc | Amazon Test F1 | DeepShop OOD Acc | DeepShop OOD F1 |
-|---|---|---|---|---|
-| Random Forest | 92.8 | 92.8 | 84.9 | 84.8 |
-| Gradient Boosting | **93.7** | **93.7** | **86.8** | **86.7** |
-| LSTM | 88.7 | 88.6 | 86.3 | 86.1 |
-
-**Top 5 Random Forest Features (Wikipedia):** `std_iei_ms` (0.177), `p10_iei_ms` (0.099), `click_y_std` (0.092), `mean_iei_ms` (0.091), `p90_iei_ms` (0.082)
+Single-task transfer across tasks on the same site is substantially weaker than in-domain attribution, but pooling multiple tasks from the same website recovers strong performance. Cross-site transfer remains weak, suggesting that behavioural fingerprints are site-conditioned rather than universal.
 
 ### What is an episode?
 
