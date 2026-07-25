@@ -8,14 +8,14 @@ Records Wikipedia and Amazon browsing traces from LLM agents and trains classifi
 ┌─────────────────────────────────────────────────────────────────┐
 │  orchestrator.py --config custom_config.yaml                    │
 │  loads registry (config.yaml) + experiment spec                 │
-│  → spawns one Apptainer subprocess per (agent × question × rep) │
+│  → spawns one subprocess per (agent × harness × question × rep) │
 └───────────────────┬─────────────────────────────────────────────┘
                     │ apptainer exec --bind src:/app/workspace
                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  agent.sif  (Playwright base image + Node deps + Chromium)      │
 │                                                                 │
-│  agent_runner.ts                                                │
+│  agent_runner.ts (MidScene) or browser_use_runner.py            │
 │  ├── launches headless Chromium via Playwright                  │
 │  ├── exposeFunction(__pushTraceEvent) — events pushed from page │
 │  │     to Node.js over CDP in real-time (no polling)           │
@@ -26,11 +26,11 @@ Records Wikipedia and Amazon browsing traces from LLM agents and trains classifi
 │  │     (no search terms, no content — behavior only)           │
 │  ├── navigates to START_URL (default: en.wikipedia.org)         │
 │  │     waitUntil: 'load' — compatible with ad-heavy sites      │
-│  ├── calls MidScene aiAct() with the task prompt                │
+│  ├── calls the selected harness with the task prompt            │
 │  │     the LLM browses freely, following links across pages     │
 │  │     on failure: partial trace saved with error field set     │
 │  ├── single backstop harvest() for beforeunload edge cases      │
-│  └── writes  traces/{agent_id}/{dataset}/{timestamp}/{id}.json  │
+│  └── writes traces/{agent}/{dataset}/{harness}/{time}/{id}.json │
 └─────────────────────────────────────────────────────────────────┘
                     │
                     ▼
@@ -80,7 +80,7 @@ Each episode produces one `.json` trace file:
 | `meta` | model name, agent id, dataset name, question, start_url, task_type, timestamp |
 | `result` | the agent's answer, confidence, sources cited — `null` if `aiAct` failed |
 | `error` | error message string if `aiAct` threw, otherwise `null` |
-| `midscene_log` | high-level MidScene action log — what the LLM decided to do |
+| `midscene_log` / `browser_use_log` | harness-specific high-level action log; never used by the behavioral classifiers |
 | `dom_trace` | low-level DOM events — clicks, scrolls, keypresses, navigations |
 
 The classifiers see only `dom_trace` events — they never see the question text, search terms, or page content.
@@ -226,7 +226,50 @@ datasets:
     seed: 42
 ```
 
-Traces land in `traces/{agent_id}/{dataset_name}/{timestamp}/`.
+New traces land in
+`traces/{agent_id}/{dataset_name}/{harness}/{timestamp}/`. Existing
+pre-harness traces in `traces/{agent_id}/{dataset_name}/{timestamp}/` remain
+supported and are treated as MidScene episodes.
+
+### Browser-use comparison traces
+
+Use the browser-use harness to collect a second trace corpus without rerunning
+MidScene:
+
+```yaml
+harnesses:
+  - browser_use
+```
+
+[`src/multi_harness_config.yaml`](src/multi_harness_config.yaml) defines the
+six-model browser-use collection over 2WikiMultiHopQA and WebShop. Existing
+MidScene traces and trained classifiers are left untouched. The config selects
+a separate image so the existing MidScene-only image is not replaced:
+
+```bash
+cd src
+apptainer build agent.multi.sif agent.def
+python orchestrator.py --config multi_harness_config.yaml --dry-run
+python orchestrator.py --config multi_harness_config.yaml
+```
+
+Use `--agents qwen3_5_27b` to collect one model at a time when local vLLM
+servers share a port. The harness filter is optional because this config
+contains only `browser_use`. Resume state remains tracked independently by
+harness, so existing MidScene traces are neither skipped nor overwritten.
+
+The browser-use runner connects a passive Playwright observer to the same
+Chromium process over CDP and injects the existing `page_tracer.js`. Thus both
+harnesses produce the same website-visible event vocabulary. A task that
+finishes incorrectly, reaches its step limit, or reports `task_success: false`
+is still retained. Only traces without browser events, corrupt files, and
+configured fatal API/service failures are excluded by the analyzer.
+
+For labeled tasks, `task_success` is the ground-truth verification result;
+browser-use's own completion judgement is stored separately as
+`browser_use_log.agent_reported_success`. The configured 300-second task
+budget stops agent actions, while `cleanup_grace_s` only allows the runner to
+harvest events, save a partial trace, and close Chromium.
 
 ### Shopping domain config
 
@@ -347,9 +390,12 @@ Reads `wiki_ood_amazon/results.json` and `webshop/results.json` and writes:
 traces/
 ├── qwen3vl_8b/
 │   ├── 2wikimultihop_train/
-│   │   └── 20260404_090000/
-│   │       ├── qwen3vl_a1b2c3d4.json
-│   │       └── ...
+│   │   ├── midscene/
+│   │   │   └── 20260404_090000/
+│   │   │       └── qwen3vl_midscene_a1b2c3d4.json
+│   │   └── browser_use/
+│   │       └── 20260404_090000/
+│   │           └── qwen3vl_browser_use_e5f6a7b8.json
 │   ├── 2wikimultihop_val/
 │   │   └── ...
 │   └── webshop_train/
@@ -388,6 +434,7 @@ VLLM_API_KEY=test_away      # any non-empty string; vLLM accepts anything
 OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
 GOOGLE_API_KEY=...
+OPEN_ROUTER_API_KEY=sk-or-...
 ```
 
 ## Quick-start
@@ -472,11 +519,13 @@ Set in `config.yaml` (`midscene_defaults:`) or override per-agent in your experi
 src/
 ├── config.yaml             Registry: agents, dataset loaders, MidScene defaults
 ├── custom_config.yaml      Experiment spec (edit this to define a run)
+├── multi_harness_config.yaml  Balanced MidScene + browser-use experiment
 ├── agent.def               Apptainer build spec
 ├── agent.sif               Built container image (generated)
 ├── package.json            Node deps baked into the image
 ├── page_tracer.js          IIFE injected into every page; records DOM events
 ├── agent_runner.ts         One agent episode end-to-end (TypeScript)
+├── browser_use_runner.py   One browser-use episode + passive CDP trace observer
 ├── orchestrator.py         Drives all episodes via subprocess
 ├── prep_datasets.py        Download + standardize HuggingFace/local datasets
 ├── qa_dataset.py           10 built-in curated multi-hop questions

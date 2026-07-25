@@ -15,6 +15,16 @@
 midscene_defaults:
   MIDSCENE_REPLANNING_CYCLE_LIMIT: "40" #"20"
 
+# Browser-use defaults are applied only to browser_use harness episodes.
+# Task-level failures are still saved and counted as valid behavioral traces.
+browser_use_defaults:
+  BROWSER_USE_MAX_STEPS: "40"
+  BROWSER_USE_MAX_ACTIONS_PER_STEP: "5"
+  BROWSER_USE_MAX_FAILURES: "5"
+  BROWSER_USE_LLM_TIMEOUT: "120"
+  BROWSER_USE_STEP_TIMEOUT: "180"
+  BROWSER_USE_VISION: "true"
+
 # =============================================================================
 # Agent registry
 # Referenced by agent_id in experiment configs.

@@ -3,8 +3,8 @@
   "type": "module",
   "devDependencies": {
     "@midscene/web": "latest",
-    "playwright": "latest",
-    "@playwright/test": "latest",
+    "playwright": "1.59.0",
+    "@playwright/test": "1.59.0",
     "tsx": "latest",
     "dotenv": "latest"
   }

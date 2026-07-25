@@ -2,8 +2,22 @@ Bootstrap: docker
 From: mcr.microsoft.com/playwright:v1.50.0-noble
 
 %post
+  # The Playwright base image includes Python but not pip.
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    python3-pip \
+    python3-venv
+  rm -rf /var/lib/apt/lists/*
+
   # Install tsx globally for running TypeScript files directly
   npm install -g tsx
+
+  # Browser-use is the second agent harness. Its Playwright dependency is used
+  # only as a passive trace observer connected to browser-use Chromium via CDP.
+  python3 -m venv /opt/browser-use-venv
+  /opt/browser-use-venv/bin/python -m pip install --no-cache-dir \
+    browser-use==0.13.6 \
+    playwright==1.59.0
 
   # Pre-install all node_modules into /app inside the image.
   # Source files (.ts, .js) live on the HOST and are only visible via the
@@ -15,8 +29,8 @@ From: mcr.microsoft.com/playwright:v1.50.0-noble
     "type": "module",
     "devDependencies": {
       "@midscene/web": "latest",
-      "playwright": "latest",
-      "@playwright/test": "latest",
+      "playwright": "1.59.0",
+      "@playwright/test": "1.59.0",
       "tsx": "latest",
       "dotenv": "latest"
     }
@@ -31,8 +45,11 @@ PKGJSON
   # NODE_PATH lets Node resolve modules from /app/node_modules even when
   # the CWD is /workspace (the bind-mounted host directory).
   export NODE_PATH=/app/node_modules
-  export PATH=/app/node_modules/.bin:/usr/local/bin:$PATH
+  export PATH=/opt/browser-use-venv/bin:/app/node_modules/.bin:/usr/local/bin:$PATH
   export PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+  export BROWSER_USE_CONFIG_DIR=/tmp/browseruse
+  export ANONYMIZED_TELEMETRY=false
+  export BROWSER_USE_CLOUD_SYNC=false
 
 %runscript
   exec "$@"

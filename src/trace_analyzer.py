@@ -347,7 +347,12 @@ def load_dataset(trace_dir: Path,
                  ) -> tuple[dict[str, tuple], dict[str, set]]:
     """Load all episode traces, bucketed by split.
 
-    Path pattern: traces/{agent_id}/{dataset_name}/{timestamp}/{episode_id}.json
+    Supported path patterns:
+      legacy: traces/{agent_id}/{dataset_name}/{timestamp}/{episode_id}.json
+      current: traces/{agent_id}/{dataset_name}/{harness}/{timestamp}/{episode_id}.json
+
+    Harness is deliberately not used as a label or feature. Mixed-harness
+    classification continues to target episode.meta.agent_id.
 
     train_datasets: base names (suffix stripped) whose _train/_val/_test traces
       go into the train/val/test buckets. e.g. ["2wikimultihop"] loads only

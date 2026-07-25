@@ -190,6 +190,7 @@ try {
     meta: {
       episode_id:   EPISODE_ID,
       agent_id:     AGENT_ID,
+      harness:      'midscene',
       model_name:   process.env.MIDSCENE_MODEL_NAME,
       model_family: process.env.MIDSCENE_MODEL_FAMILY,
       timestamp:    new Date().toISOString(),

@@ -1,0 +1,88 @@
+# Browser-use trace collection for 2WikiMultiHopQA and WebShop.
+#
+# This schedules the 6 models through browser-use only. Existing MidScene
+# traces and classifiers remain untouched and can be used as the comparison
+# corpus.
+# Task-level failures are retained when they contain browser-visible events.
+# The local registry entries currently share vLLM ports, so either assign each
+# server a distinct endpoint or collect them sequentially, for example:
+#   python orchestrator.py --config multi_harness_config.yaml --agents qwen3_5_27b
+
+run:
+  # Keep the browser-use image separate from the project's existing agent.sif.
+  sif_path: agent.multi.sif
+  episodes_per_combo: 1
+  # Match the existing MidScene corpus's per-episode wall-clock budget so
+  # timeout duration does not become a harness-identifying feature.
+  timeout_s: 300
+  # The agent stops at 300s; this is process-only grace for harvesting events,
+  # writing the partial JSON trace, and closing Chromium.
+  cleanup_grace_s: 30
+  # Browser profiles and browser-use's internal tempfile state live in local
+  # tmpfs rather than the nearly-full system /tmp or network-backed /VData.
+  # The default path includes the current UID, so no fixed path is needed here:
+  # browser_use_tmp_root: /dev/shm/known-actions-browser-use-<uid>
+  browser_use_tmp_min_free_gb: 10
+  # Start conservatively: browser-use is multi-step and local vLLM models are
+  # expensive. Increase only after checking server queueing and GPU memory.
+  workers: 2
+
+harnesses:
+  - browser_use
+
+agents:
+  - agent_id: gpt_5_4
+  - agent_id: claude_opus_4_6
+  - agent_id: gemini_3_1
+  - agent_id: qwen3_5_27b
+  - agent_id: glm_4.6v
+  - agent_id: gemma-4-31B-it
+
+datasets:
+  - name: 2wikimultihop_train
+    source: datasets/2wikimultihop_train.json
+    hf_dataset: 2wikimultihop
+    split: train
+    n_questions: 150
+    seed: 42
+
+  - name: 2wikimultihop_val
+    source: datasets/2wikimultihop_val.json
+    hf_dataset: 2wikimultihop
+    split: validation
+    n_questions: 75
+    seed: 42
+
+  - name: 2wikimultihop_test
+    source: datasets/2wikimultihop_test.json
+    hf_dataset: 2wikimultihop
+    split: test
+    n_questions: 75
+    seed: 42
+
+  - name: webshop_train
+    source: datasets/webshop_train.json
+    hf_dataset: webshop_goals
+    n_questions: 150
+    seed: 42
+    offset: 0
+    start_url: "https://www.amazon.com"
+    task_type: shop
+
+  - name: webshop_val
+    source: datasets/webshop_val.json
+    hf_dataset: webshop_goals
+    n_questions: 75
+    seed: 42
+    offset: 150
+    start_url: "https://www.amazon.com"
+    task_type: shop
+
+  - name: webshop_test
+    source: datasets/webshop_test.json
+    hf_dataset: webshop_goals
+    n_questions: 75
+    seed: 42
+    offset: 225
+    start_url: "https://www.amazon.com"
+    task_type: shop

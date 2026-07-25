@@ -7,10 +7,12 @@ src/web_shop_goals.json
 src/datasets
 src/logos
 src/traces
-src/agent.sif
+src/*.sif
+.apptainer/
 src/__pycache__
 **__pycache__**
 *.env
 src/.env
+src/.browser-use-tmp/
 *qwen3vl_30b_a3b
 *qwen3vl_8b
