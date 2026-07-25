@@ -70,6 +70,15 @@ EVENT_VOCAB = {
 VOCAB_SIZE = len(EVENT_VOCAB)
 
 
+def _finite_float(value, default: float = 0.0) -> float:
+    """Convert a raw numeric trace value without mutating the source episode."""
+    try:
+        converted = float(value)
+    except (TypeError, ValueError):
+        return default
+    return converted if np.isfinite(converted) else default
+
+
 def _infer_split(dataset_name: str) -> str | None:
     if dataset_name.endswith("_train"): return "train"
     if dataset_name.endswith("_val"):   return "val"
@@ -99,7 +108,7 @@ def _perturb_timestamps(episode: dict, max_delay_ms: float) -> dict:
 
 def _type_ieis(events, event_type) -> list[float]:
     """Inter-event intervals for a single event type, in ms."""
-    ts = [e.get("t_episode") or e.get("t") or 0
+    ts = [_finite_float(e.get("t_episode") or e.get("t"))
           for e in events if e["type"] == event_type]
     return np.diff(ts).tolist() if len(ts) > 1 else [0.0]
 
@@ -123,7 +132,7 @@ def extract_features(episode, n_events: int | None = None,
 
     page_count = dom.get("pageCount") or len({e.get("url", "") for e in events})
 
-    ts   = [e.get("t_episode") or e.get("t") or 0 for e in events]
+    ts   = [_finite_float(e.get("t_episode") or e.get("t")) for e in events]
     ieis = np.diff(ts).tolist() if len(ts) > 1 else [0]
 
     # ── Global timing ─────────────────────────────────────────────────────────
@@ -158,17 +167,18 @@ def extract_features(episode, n_events: int | None = None,
     std_key_iei_ms  = float(np.std(key_ieis))
 
     # ── Scroll ────────────────────────────────────────────────────────────────
-    max_scroll_pct  = max((e.get("pct") or 0 for e in scrolls), default=0)
-    mean_scroll_pct = float(np.mean([e.get("pct") or 0 for e in scrolls])) if scrolls else 0.0
-    n_deep_scrolls  = sum(1 for e in scrolls if (e.get("pct") or 0) > 60)
+    scroll_pcts = [_finite_float(e.get("pct")) for e in scrolls]
+    max_scroll_pct  = max(scroll_pcts, default=0)
+    mean_scroll_pct = float(np.mean(scroll_pcts)) if scroll_pcts else 0.0
+    n_deep_scrolls  = sum(1 for pct in scroll_pcts if pct > 60)
 
-    pcts  = [e.get("pct") or 0 for e in scrolls]
+    pcts  = scroll_pcts
     diffs = np.diff(pcts)
     scroll_reversals = int(np.sum((diffs[:-1] * diffs[1:]) < 0)) if len(diffs) > 1 else 0
 
     # ── Clicks ────────────────────────────────────────────────────────────────
-    click_xs = [e.get("x") or 0 for e in clicks]
-    click_ys = [e.get("y") or 0 for e in clicks]
+    click_xs = [_finite_float(e.get("x")) for e in clicks]
+    click_ys = [_finite_float(e.get("y")) for e in clicks]
     click_x_std = float(np.std(click_xs)) if click_xs else 0.0
     click_y_std = float(np.std(click_ys)) if click_ys else 0.0
 
@@ -220,7 +230,7 @@ def extract_features(episode, n_events: int | None = None,
     scroll_to_click_ratio = n_scrolls / max(n_clicks, 1)
 
     # ── Exit scroll depth ─────────────────────────────────────────────────────
-    bu_pcts = [e.get("pct") or 0 for e in beforeunload]
+    bu_pcts = [_finite_float(e.get("pct")) for e in beforeunload]
     mean_exit_scroll_pct = float(np.mean(bu_pcts)) if bu_pcts else 0.0
 
     return {
@@ -304,14 +314,17 @@ def extract_sequence(episode, n_events: int | None = None,
     for e in events:
         etype = e["type"]
         token = EVENT_VOCAB.get(etype, EVENT_VOCAB["<unk>"])
-        t     = e.get("t_episode") or e.get("t") or 0
+        t     = _finite_float(e.get("t_episode") or e.get("t"))
         delta = (t - prev_t) if prev_t is not None else 0.0
         f0    = float(np.log1p(max(delta, 0)))
         f1    = float(np.log1p(max(t, 0)))
         if etype == "scroll":
-            f2, f3 = (e.get("pct") or 0) / 100.0, 0.0
+            f2, f3 = _finite_float(e.get("pct")) / 100.0, 0.0
         elif etype == "click":
-            f2, f3 = (e.get("x") or 0) / 1280.0, (e.get("y") or 0) / 768.0
+            f2, f3 = (
+                _finite_float(e.get("x")) / 1280.0,
+                _finite_float(e.get("y")) / 768.0,
+            )
         else:
             f2, f3 = 0.0, 0.0
 

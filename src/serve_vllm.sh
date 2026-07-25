@@ -86,3 +86,7 @@ CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3.5-27B \
 #   --extra-index-url https://download.pytorch.org/whl/cu124
 
 # pip install transformers==5.5.0
+
+
+# GPT-5.4, Opus 4.6, Gemini 3.1 Pro
+# Qwen 3.5-27B, GLM-4.6V, gemma-4-26B-A4B-it

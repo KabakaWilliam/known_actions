@@ -16,6 +16,12 @@ import time
 from pathlib import Path
 from typing import Any, Literal
 
+from openai import APIConnectionError, APIStatusError, RateLimitError
+from openai.types.shared_params.response_format_json_schema import (
+    JSONSchema,
+    ResponseFormatJSONSchema,
+)
+
 # Apptainer runs with --no-home; browser-use must not try to initialize its
 # default profile/config beneath the host user's read-only home directory.
 # The orchestrator binds a private host tmpfs directory at this path and sets
@@ -35,6 +41,10 @@ os.environ.setdefault("BROWSER_USE_CLOUD_SYNC", "false")
 
 from browser_use import Agent, BrowserSession
 from browser_use.llm import ChatOpenAI, ChatOpenRouter
+from browser_use.llm.exceptions import ModelProviderError, ModelRateLimitError
+from browser_use.llm.openrouter.serializer import OpenRouterMessageSerializer
+from browser_use.llm.schema import SchemaOptimizer
+from browser_use.llm.views import ChatInvokeCompletion
 from playwright.async_api import Browser as PlaywrightBrowser
 from playwright.async_api import BrowserContext, Page, Playwright, async_playwright
 from pydantic import BaseModel
@@ -49,6 +59,87 @@ class QAResult(BaseModel):
 UNKNOWN_ANSWER_SENTINELS = {"", "na", "n/a", "none", "null", "unknown"}
 
 
+class CompatibleChatOpenRouter(ChatOpenRouter):
+    """OpenRouter adapter with browser-use AgentOutput schema compatibility."""
+
+    async def ainvoke(
+        self,
+        messages,
+        output_format=None,
+        **kwargs: Any,
+    ):
+        if output_format is None:
+            return await super().ainvoke(messages, output_format, **kwargs)
+
+        openrouter_messages = OpenRouterMessageSerializer.serialize_messages(messages)
+        extra_headers = {}
+        if self.http_referer:
+            extra_headers["HTTP-Referer"] = self.http_referer
+
+        try:
+            schema = SchemaOptimizer.create_optimized_json_schema(
+                output_format,
+                remove_min_items=True,
+                remove_defaults=True,
+            )
+            response_format_schema: JSONSchema = {
+                "name": "agent_output",
+                "strict": True,
+                "schema": schema,
+            }
+            model_params = {
+                key: value
+                for key, value in {
+                    "temperature": self.temperature,
+                    "top_p": self.top_p,
+                    "seed": self.seed,
+                }.items()
+                if value is not None
+            }
+            response = await self.get_client().chat.completions.create(
+                model=self.model,
+                messages=openrouter_messages,
+                response_format=ResponseFormatJSONSchema(
+                    json_schema=response_format_schema,
+                    type="json_schema",
+                ),
+                extra_headers=extra_headers,
+                **model_params,
+                **(self.extra_body or {}),
+            )
+            content = response.choices[0].message.content
+            if content is None:
+                raise ModelProviderError(
+                    message="Failed to parse structured output from model response",
+                    status_code=500,
+                    model=self.name,
+                )
+            return ChatInvokeCompletion(
+                completion=output_format.model_validate_json(content),
+                usage=self._get_usage(response),
+            )
+        except ModelProviderError:
+            raise
+        except RateLimitError as exc:
+            raise ModelRateLimitError(
+                message=exc.message, model=self.name
+            ) from exc
+        except APIConnectionError as exc:
+            raise ModelProviderError(
+                message=str(exc), model=self.name
+            ) from exc
+        except APIStatusError as exc:
+            raise ModelProviderError(
+                message=exc.message,
+                status_code=exc.status_code,
+                model=self.name,
+            ) from exc
+        except Exception as exc:
+            raise ModelProviderError(
+                message=str(exc), model=self.name
+            ) from exc
+
+
 def _has_known_answer(value: str | None) -> bool:
     return (
         value is not None
@@ -61,6 +152,15 @@ def _env_bool(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _has_browser_activity(events: list[dict[str, Any]]) -> bool:
+    """Return whether the website observed at least one browser event."""
+    return any(
+        event.get("type")
+        and str(event.get("url") or "").startswith(("http://", "https://"))
+        for event in events
+    )
 
 
 def _model_setting(name: str, default: str | None = None) -> str | None:
@@ -106,10 +206,35 @@ def _build_llm():
         provider = "openrouter" if base_url and "openrouter.ai" in base_url else "openai"
 
     if provider == "openrouter":
-        return ChatOpenRouter(
+        return CompatibleChatOpenRouter(
             model=model,
             api_key=api_key,
             base_url=base_url or "https://openrouter.ai/api/v1",
+            extra_body={
+                "max_tokens": int(
+                    os.getenv("BROWSER_USE_MAX_COMPLETION_TOKENS", "4096")
+                ),
+                # browser-use requires every agent step to satisfy a strict
+                # AgentOutput JSON schema. OpenRouter otherwise permits
+                # routing to providers that silently ignore unsupported
+                # request parameters, which produces unparseable free-form
+                # or concatenated JSON responses.
+                # ChatOpenRouter expands this mapping into OpenAI SDK keyword
+                # arguments, so OpenRouter-specific request fields belong in
+                # the SDK's own extra_body argument.
+                "extra_body": {
+                    "provider": {
+                        "require_parameters": _env_bool(
+                            "BROWSER_USE_OPENROUTER_REQUIRE_PARAMETERS", True
+                        )
+                    },
+                    # GPT-5.4 can occasionally concatenate otherwise valid
+                    # AgentOutput objects. OpenRouter's non-streaming response
+                    # healer repairs malformed JSON before browser-use parses
+                    # the strict schema, avoiding costly retry loops.
+                    "plugins": [{"id": "response-healing"}],
+                },
+            },
         )
     if provider == "openai":
         return ChatOpenAI(
@@ -325,6 +450,14 @@ async def run_episode(args: argparse.Namespace) -> int:
         agent_reported_success = (
             bool(history.is_successful()) if history is not None else False
         )
+        usage_summary = history.usage if history is not None else None
+        if usage_summary is None and agent is not None:
+            try:
+                usage_summary = (
+                    await agent.token_cost_service.get_usage_summary()
+                )
+            except Exception:
+                usage_summary = None
 
         verification = (
             {
@@ -336,15 +469,20 @@ async def run_episode(args: argparse.Namespace) -> int:
             if _has_known_answer(args.expected_answer)
             else None
         )
+        browser_activity_observed = _has_browser_activity(events)
         # For labeled tasks, success means the answer matches ground truth.
-        # Otherwise retain browser-use's own completion judgement.
-        task_success = (
+        # Otherwise retain browser-use's own completion judgement. In either
+        # case, a task cannot succeed without website-visible browser activity.
+        answer_success = (
             bool(verification["correct"])
             if verification is not None
             else agent_reported_success
         )
+        task_success = answer_success and browser_activity_observed
         task_success_source = (
-            "ground_truth" if verification is not None else "agent_reported"
+            "ground_truth_and_browser_activity"
+            if verification is not None
+            else "agent_reported_and_browser_activity"
         )
 
         browser_use_log = (
@@ -354,8 +492,15 @@ async def run_episode(args: argparse.Namespace) -> int:
                 "urls": history.urls(),
                 "final_result": final_result,
                 "agent_reported_success": agent_reported_success,
+                "answer_success_before_activity_gate": answer_success,
+                "browser_activity_observed": browser_activity_observed,
                 "task_success": task_success,
                 "task_timed_out": task_timed_out,
+                "usage": (
+                    usage_summary.model_dump(mode="json")
+                    if usage_summary is not None
+                    else None
+                ),
             }
             if history is not None
             else {}
@@ -380,6 +525,7 @@ async def run_episode(args: argparse.Namespace) -> int:
             "error": execution_error,
             "task_success": task_success,
             "task_success_source": task_success_source,
+            "browser_activity_observed": browser_activity_observed,
             "task_timed_out": task_timed_out,
             "midscene_log": [],
             "browser_use_log": browser_use_log,
@@ -419,13 +565,15 @@ async def run_episode(args: argparse.Namespace) -> int:
         if agent is not None:
             shutil.rmtree(agent.agent_directory, ignore_errors=True)
 
-    if execution_error:
-        print(f"[ERROR] browser-use failed — partial trace saved → {output_path}")
-        print(f"[DETAIL] {execution_error}")
-        return 1
-    print(f"[OK] Trace saved → {output_path}")
+    print(f"[TRACE_SAVED] {output_path}")
     print(f"[ANSWER] {json.dumps(result)}")
     print(f"[TASK_SUCCESS] {task_success}")
+    print(f"[BROWSER_ACTIVITY] {browser_activity_observed}")
+    if execution_error:
+        print("[EPISODE_STATUS] runner_error")
+        print(f"[DETAIL] {execution_error}")
+        return 1
+    print("[EPISODE_STATUS] collected")
     if task_timed_out:
         print(f"[TASK_TIMEOUT] Agent stopped after {args.task_timeout:g}s; partial trace saved")
     return 0

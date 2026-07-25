@@ -24,6 +24,7 @@ browser_use_defaults:
   BROWSER_USE_LLM_TIMEOUT: "120"
   BROWSER_USE_STEP_TIMEOUT: "180"
   BROWSER_USE_VISION: "true"
+  BROWSER_USE_MAX_COMPLETION_TOKENS: "4096"
 
 # =============================================================================
 # Agent registry
@@ -154,9 +155,9 @@ agents:
     family: gpt_5
     source: proprietary
     env:
-      MIDSCENE_MODEL_NAME:     "gpt-5.4"
-      MIDSCENE_MODEL_API_KEY:  "$OPENAI_API_KEY"
-      MIDSCENE_MODEL_BASE_URL: "https://api.openai.com/v1"
+      MIDSCENE_MODEL_NAME:     "openai/gpt-5.4"
+      MIDSCENE_MODEL_API_KEY:  "$OPEN_ROUTER_API_KEY"
+      MIDSCENE_MODEL_BASE_URL: "https://openrouter.ai/api/v1"
       MIDSCENE_MODEL_FAMILY:   "gpt-5"
 
   - agent_id: gpt5
@@ -228,9 +229,9 @@ agents:
     family: gemini_3
     source: proprietary
     env:
-      MIDSCENE_MODEL_NAME:     "gemini-3.1-pro-preview"
-      MIDSCENE_MODEL_API_KEY:  "$GOOGLE_API_KEY"
-      MIDSCENE_MODEL_BASE_URL: "https://generativelanguage.googleapis.com/v1beta/openai"
+      MIDSCENE_MODEL_NAME:     "google/gemini-3.1-pro-preview"
+      MIDSCENE_MODEL_API_KEY:  "$OPEN_ROUTER_API_KEY"
+      MIDSCENE_MODEL_BASE_URL: "https://openrouter.ai/api/v1"
       MIDSCENE_MODEL_FAMILY:   "gemini"
 
   - agent_id: gemini_3_flash

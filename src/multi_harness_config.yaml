@@ -1,6 +1,6 @@
 # Browser-use trace collection for 2WikiMultiHopQA and WebShop.
 #
-# This schedules the 6 models through browser-use only. Existing MidScene
+# This schedules the 7 models through browser-use only. Existing MidScene
 # traces and classifiers remain untouched and can be used as the comparison
 # corpus.
 # Task-level failures are retained when they contain browser-visible events.
@@ -23,6 +23,8 @@ run:
   # The default path includes the current UID, so no fixed path is needed here:
   # browser_use_tmp_root: /dev/shm/known-actions-browser-use-<uid>
   browser_use_tmp_min_free_gb: 10
+  # Avoid dataset-order/time-of-day confounding while remaining reproducible.
+  shuffle_seed: 42
   # Start conservatively: browser-use is multi-step and local vLLM models are
   # expensive. Increase only after checking server queueing and GPU memory.
   workers: 2
@@ -31,12 +33,13 @@ harnesses:
   - browser_use
 
 agents:
+  - agent_id: qwen3vl_30b_a3b
   - agent_id: gpt_5_4
   - agent_id: claude_opus_4_6
   - agent_id: gemini_3_1
   - agent_id: qwen3_5_27b
   - agent_id: glm_4.6v
-  - agent_id: gemma-4-31B-it
+  - agent_id: gemma_4_26B_A4B_it
 
 datasets:
   - name: 2wikimultihop_train

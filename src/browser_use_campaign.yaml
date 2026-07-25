@@ -1,0 +1,105 @@
+campaign:
+  experiment_config: multi_harness_config.yaml
+  harness: browser_use
+  run_root: campaign_runs
+  vllm_executable: /opt/anaconda/envs/known_ag/bin/vllm
+  local_workers: 10
+  # Keep paid-provider overshoot bounded if a key reaches its spend limit.
+  openrouter_workers: 5
+  openrouter_minimum_credit: 2.0
+  max_collection_rounds: 2
+  max_existing_gpu_memory_mib: 2048
+  vllm_smoke_timeout_s: 120
+  # A busy local model is recorded as blocked; cloud collection still proceeds.
+  continue_on_resource_blocked: true
+
+local_models:
+  - agent_id: qwen3vl_30b_a3b
+    vllm:
+      model: Qwen/Qwen3-VL-30B-A3B-Instruct
+      served_model_name: Qwen/Qwen3-VL-30B-A3B-Instruct
+      gpus: [0, 3]
+      port: 3030
+      startup_timeout_s: 3600
+      # GPU 1 is intentionally shared with a small existing allocation.
+      max_existing_gpu_memory_mib: 6000
+      args:
+        - --tensor-parallel-size
+        - "2"
+        - --max-model-len
+        - "163840"
+        - --gpu-memory-utilization
+        - "0.75"
+        - --max-num-seqs
+        - "10"
+        - --limit-mm-per-prompt.image
+        - "1"
+        - --limit-mm-per-prompt.video
+        - "0"
+        - --enable-prefix-caching
+
+  # Already complete runs are skipped before any GPU or port checks.
+  - agent_id: qwen3_5_27b
+    vllm:
+      model: Qwen/Qwen3.5-27B
+      served_model_name: Qwen/Qwen3.5-27B
+      gpus: [0]
+      port: 3031
+      startup_timeout_s: 1800
+      args:
+        - --limit-mm-per-prompt.video
+        - "0"
+        - --reasoning-parser
+        - qwen3
+        - --enable-prefix-caching
+        - --max-model-len
+        - "163840"
+
+  - agent_id: gemma_4_26B_A4B_it
+    vllm:
+      model: google/gemma-4-26B-A4B-it
+      served_model_name: google/gemma-4-26B-A4B-it
+      gpus: [0]
+      port: 3030
+      startup_timeout_s: 3600
+      args:
+        - --max-model-len
+        - "32768"
+        - --gpu-memory-utilization
+        - "0.90"
+
+  - agent_id: glm_4.6v
+    vllm:
+      model: zai-org/GLM-4.6V
+      served_model_name: glm-4.6v
+      gpus: [0, 1, 2, 3]
+      port: 3031
+      startup_timeout_s: 2400
+      args:
+        - --tensor-parallel-size
+        - "4"
+        - --tool-call-parser
+        - glm45
+        - --reasoning-parser
+        - glm45
+        - --enable-auto-tool-choice
+        - --served-model-name
+        - glm-4.6v
+        - --enable-expert-parallel
+        - --allowed-local-media-path
+        - /
+        - --mm-encoder-tp-mode
+        - data
+        - --mm_processor_cache_type
+        - shm
+
+# Paid models are intentionally ordered from cheaper to more expensive.
+openrouter_models:
+  - agent_id: gpt_5_4
+    model: openai/gpt-5.4
+
+  - agent_id: gemini_3_1
+    model: google/gemini-3.1-pro-preview
+
+  - agent_id: claude_opus_4_6
+    model: anthropic/claude-opus-4.6

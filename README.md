@@ -271,6 +271,33 @@ browser-use's own completion judgement is stored separately as
 budget stops agent actions, while `cleanup_grace_s` only allows the runner to
 harvest events, save a partial trace, and close Chromium.
 
+### Automated browser-use campaigns
+
+`browser_use_campaign.py` manages the model-level lifecycle above the episode
+orchestrator. It skips complete models, starts and health-checks owned vLLM
+servers, resumes missing traces, and stops each owned server. Local models run
+in the configured order Qwen3-VL-30B, Qwen3.5, Gemma, then GLM-4.6V;
+OpenRouter models then run in the order GPT, Gemini, and Opus:
+
+```bash
+cd src
+python browser_use_campaign.py --config browser_use_campaign.yaml --dry-run
+python browser_use_campaign.py --config browser_use_campaign.yaml
+```
+
+Use `--only <agent_id> ...`, `--skip-local`, or `--skip-openrouter` to select
+campaign phases. A resource-blocked local model is recorded in the campaign
+manifest while later cloud phases continue. Exit code 2 means collection
+stopped on a fatal API/credit error; exit code 3 means cloud work completed but
+one or more local models remain resource-blocked. Rerunning the same command
+resumes from valid traces already collected.
+
+Each future browser-use trace records its prompt, cached-prompt, completion,
+and total token counts under `browser_use_log.usage`. Campaign-level totals and
+OpenRouter key-balance snapshots are written to the ignored
+`campaign_runs/<campaign-id>/manifest.json`. Use a dedicated OpenRouter key so
+balance deltas represent only this campaign.
+
 ### Shopping domain config
 
 For Amazon/WebShop-style tasks, add `start_url`, `task_type`, and `task_prompt_template` to the dataset entry:
@@ -526,6 +553,8 @@ src/
 ├── page_tracer.js          IIFE injected into every page; records DOM events
 ├── agent_runner.ts         One agent episode end-to-end (TypeScript)
 ├── browser_use_runner.py   One browser-use episode + passive CDP trace observer
+├── browser_use_campaign.py Model server lifecycle + resumable campaign runner
+├── browser_use_campaign.yaml Local/OpenRouter campaign and GPU configuration
 ├── orchestrator.py         Drives all episodes via subprocess
 ├── prep_datasets.py        Download + standardize HuggingFace/local datasets
 ├── qa_dataset.py           10 built-in curated multi-hop questions

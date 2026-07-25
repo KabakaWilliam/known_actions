@@ -14,5 +14,6 @@ src/__pycache__
 *.env
 src/.env
 src/.browser-use-tmp/
+src/campaign_runs/
 *qwen3vl_30b_a3b
 *qwen3vl_8b

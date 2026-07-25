@@ -255,8 +255,11 @@ def find_completed_counts(agent_id: str, dataset_name: str, harness: str) -> dic
 # Errors that mean every subsequent episode will also fail — abort immediately.
 FATAL_API_PATTERNS = [
     "credit balance is too low",
+    "insufficient credits",
     "insufficient_quota",
     "invalid_api_key",
+    "payment_required",
+    "token_limit_exceeded",
     "401 Unauthorized",
     "402 Payment",
     "402 This request requires more credits",
@@ -275,10 +278,17 @@ def check_trace_for_fatal_error(host_out_dir: Path) -> str | None:
             return None
         with open(traces[0]) as f:
             trace = json.load(f)
-        error = trace.get("error") or ""
-        for pattern in FATAL_API_PATTERNS:
-            if pattern.lower() in error.lower():
-                return error
+        candidates = [trace.get("error")]
+        candidates.extend(
+            (trace.get("browser_use_log") or {}).get("errors") or []
+        )
+        for candidate in candidates:
+            if not candidate:
+                continue
+            error = str(candidate)
+            for pattern in FATAL_API_PATTERNS:
+                if pattern.lower() in error.lower():
+                    return error
     except Exception:
         pass
     return None
@@ -569,12 +579,18 @@ def main():
                 )
                 jobs.append((agent, q, ep_id, container_out, host_out, dataset, label))
 
+    shuffle_seed = run_cfg.get("shuffle_seed")
+    if shuffle_seed is not None:
+        random.Random(shuffle_seed).shuffle(jobs)
+
     print(f"Config:   {args.config.name}")
     agent_labels = [f"{a['agent_id']}@{a['harness']}" for a in agents]
     print(f"Agents:   {agent_labels}")
     print(f"Datasets: [{ds_summary}]")
     print(f"Episodes: {len(jobs)} to run  ({skipped} skipped — already collected)")
     print(f"Workers:  {workers_label}")
+    if shuffle_seed is not None:
+        print(f"Job order: deterministically shuffled (seed={shuffle_seed})")
     print(f"Budget:   {timeout_s}s task + {cleanup_grace_s}s browser-use cleanup grace")
     if browser_tmp_run_dir is not None:
         print(f"Temp:     {browser_tmp_run_dir}")
@@ -584,7 +600,8 @@ def main():
         print("All episodes already collected. Nothing to do.")
         return
 
-    succeeded = failed = 0
+    collected = runner_failed = 0
+    fatal_error: str | None = None
     lock        = threading.Lock()
     abort_event = threading.Event()
 
@@ -597,13 +614,13 @@ def main():
     signal.signal(signal.SIGTERM, _handle_interrupt)
 
     def _handle_result(ok, lines, label, agent, dataset, host_out):
-        nonlocal succeeded, failed
+        nonlocal collected, runner_failed, fatal_error
         with lock:
             if ok:
-                succeeded += 1
+                collected += 1
             else:
-                failed += 1
-        status = "✓" if ok else "✗"
+                runner_failed += 1
+        status = "COLLECTED" if ok else "RUNNER_FAILED"
         tqdm.write(f"[{status}] {label}")
         for line in lines:
             tqdm.write(f"    {line}")
@@ -613,7 +630,9 @@ def main():
             if fatal:
                 short = fatal.split("\n")[0][:120]
                 tqdm.write(f"\n[FATAL] API error — aborting run:\n  {short}\n")
+                fatal_error = fatal
                 abort_event.set()
+                _terminate_active_processes()
 
     def _run_with_abort(
         agent, q, ep_id, out, host_out, timeout_s, cleanup_grace_s, dataset
@@ -649,7 +668,7 @@ def main():
                 dataset,
             )
             _handle_result(ok, lines, label, agent, dataset, host_out)
-            bar.set_postfix(ok=succeeded, fail=failed)
+            bar.set_postfix(collected=collected, runner_fail=runner_failed)
     else:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             future_to_meta = {
@@ -673,9 +692,14 @@ def main():
                 ok, lines = future.result()
                 _handle_result(ok, lines, label, agent, dataset, host_out)
                 with lock:
-                    bar.set_postfix(ok=succeeded, fail=failed)
+                    bar.set_postfix(
+                        collected=collected, runner_fail=runner_failed
+                    )
 
-    print(f"\nDone: {succeeded} succeeded, {failed} failed")
+    print(
+        f"\nDone: {collected} traces collected, "
+        f"{runner_failed} episode runners failed"
+    )
 
     if browser_tmp_run_dir is not None and not args.dry_run:
         try:
@@ -694,6 +718,9 @@ def main():
             print(f"  {n_errors} trace(s) recorded errors (see above).")
         else:
             print("  All traces clean.")
+
+    if fatal_error is not None:
+        sys.exit(2)
 
 
 if __name__ == "__main__":
