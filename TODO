@@ -1,0 +1,13 @@
+1. [IN PROGRESS] Finish the currently funded clean browser-use collection.
+   Claude Opus was cleanly restarted after the OpenRouter tool-call fix.
+
+2. [PROVISIONAL VALIDATED] Run six-model within- and cross-harness XGBoost.
+   The five-model CPU smoke grid works; final results wait for Claude Opus.
+
+3. [PROVISIONAL VALIDATED] Run the mixed-harness model.
+   Both dataset grids work; final results wait for Claude Opus.
+
+4. [IMPLEMENTED; PROVISIONAL VALIDATED] Train the binary harness detector,
+   including leave-one-model-out evaluation.
+
+5. Run full/timing/non-timing feature ablations.

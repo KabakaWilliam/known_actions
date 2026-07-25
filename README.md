@@ -359,6 +359,99 @@ WebShop uses a single shuffled pool. The `offset` field ensures no question appe
 
 ## Training classifiers
 
+### Cross-harness identity experiments
+
+The six-model MidScene/browser-use experiment is managed separately from the
+historical flat classifier runs:
+
+```text
+qwen3vl_30b_a3b  qwen3_5_27b  glm_4.6v
+gpt_5_4          gemini_3_1    claude_opus_4_6
+```
+
+It uses frozen trace manifests so that within-harness, cross-harness, and
+balanced mixed-harness evaluations use the same task universe. Legacy traces
+without a harness directory are treated as MidScene; raw trace JSON is never
+rewritten.
+
+Audit collection coverage at any time (safe while collection is running):
+
+```bash
+cd src
+python cross_harness_pipeline.py --config cross_harness_config.yaml audit
+```
+
+Once all six browser-use collections are complete, freeze the common task
+universe:
+
+```bash
+python cross_harness_pipeline.py --config cross_harness_config.yaml prepare
+```
+
+`prepare` requires the configured minimum number of tasks that have a valid
+trace for every agent under both harnesses. It refuses to silently replace a
+different frozen manifest. Generated manifests and models live under
+`src/artifacts/classifiers/multi_harness_identity/v1/`.
+
+XGBoost is the primary classifier:
+
+```bash
+python cross_harness_pipeline.py --config cross_harness_config.yaml run-grid \
+  --classifier XGBoost
+```
+
+The grid fits three policies per dataset (`midscene`, `browser_use`,
+`mixed50`) and evaluates:
+
+```text
+midscene    → midscene, browser_use
+browser_use → browser_use, midscene
+mixed50     → mixed50, midscene, browser_use
+```
+
+The binary harness detector uses the same frozen paired task universe. Each
+leave-one-model-out fold trains on both harnesses from the remaining models
+and tests on both harnesses from the entirely unseen held-out model:
+
+```bash
+python cross_harness_pipeline.py --config cross_harness_config.yaml \
+  harness-detector --classifier XGBoost
+```
+
+While a final model is still collecting, the explicitly provisional
+five-model config can exercise the complete CPU path without writing into the
+final six-model artifact namespace:
+
+```bash
+python cross_harness_pipeline.py \
+  --config cross_harness_config.provisional.yaml prepare
+
+python cross_harness_pipeline.py \
+  --config cross_harness_config.provisional.yaml run-grid \
+  --classifier XGBoost --quick --xgb-device cpu
+
+python cross_harness_pipeline.py \
+  --config cross_harness_config.provisional.yaml harness-detector \
+  --classifier XGBoost --quick --xgb-device cpu
+```
+
+For pipeline validation without taking a GPU from trace collection, use the
+small CPU Random Forest path on one cell:
+
+```bash
+python cross_harness_pipeline.py --config cross_harness_config.yaml train \
+  --dataset 2wikimultihop --train-policy midscene \
+  --classifier RandomForest --quick
+
+python cross_harness_pipeline.py --config cross_harness_config.yaml evaluate \
+  --dataset 2wikimultihop --train-policy midscene \
+  --eval-policy browser_use --classifier RandomForest
+```
+
+LSTM is supported as the next-priority classifier. `--quick` keeps its smoke
+fit and evaluation on CPU; full LSTM and the default XGBoost configuration use
+a GPU and should wait until collection releases one.
+
 ```bash
 # Train on Wikipedia traces only
 python trace_analyzer.py --datasets 2wikimultihop --tag wiki

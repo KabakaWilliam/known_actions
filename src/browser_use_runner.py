@@ -58,9 +58,126 @@ class QAResult(BaseModel):
 
 UNKNOWN_ANSWER_SENTINELS = {"", "na", "n/a", "none", "null", "unknown"}
 
+ANTHROPIC_UNSUPPORTED_NUMERIC_SCHEMA_KEYWORDS = frozenset(
+    {
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+    }
+)
+SCHEMA_NAMED_SUBSCHEMA_MAPPINGS = frozenset(
+    {
+        "$defs",
+        "definitions",
+        "dependentSchemas",
+        "patternProperties",
+        "properties",
+    }
+)
+
+
+def _remove_schema_keywords(
+    value: Any,
+    unsupported: frozenset[str],
+    *,
+    named_subschema_mapping: bool = False,
+) -> Any:
+    """Copy a JSON schema while removing unsupported validation keywords.
+
+    Keys within mappings such as ``properties`` are user-defined field names,
+    not schema keywords. Preserve those names while still sanitizing each
+    field's nested schema.
+    """
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, child in value.items():
+            if not named_subschema_mapping and key in unsupported:
+                continue
+            sanitized[key] = _remove_schema_keywords(
+                child,
+                unsupported,
+                named_subschema_mapping=key in SCHEMA_NAMED_SUBSCHEMA_MAPPINGS,
+            )
+        return sanitized
+    if isinstance(value, list):
+        return [
+            _remove_schema_keywords(child, unsupported)
+            for child in value
+        ]
+    return value
+
 
 class CompatibleChatOpenRouter(ChatOpenRouter):
     """OpenRouter adapter with browser-use AgentOutput schema compatibility."""
+
+    async def _ainvoke_anthropic_tool(
+        self,
+        openrouter_messages,
+        output_format,
+        *,
+        extra_headers: dict[str, str],
+        model_params: dict[str, Any],
+    ):
+        """Use Claude's native-style tool path for structured agent output.
+
+        Anthropic's browser-use adapter represents the requested Pydantic
+        model as one forced tool and validates the returned tool arguments
+        locally. Do the same over OpenRouter instead of requesting a strict
+        response-format grammar, whose compiled form can exceed Anthropic's
+        size limit for browser-use's full action schema.
+        """
+        schema = SchemaOptimizer.create_optimized_json_schema(output_format)
+        tool_name = "agent_output"
+        response = await self.get_client().chat.completions.create(
+            model=self.model,
+            messages=openrouter_messages,
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "description": (
+                            f"Return the next browser-use action as "
+                            f"{output_format.__name__}"
+                        ),
+                        "parameters": schema,
+                    },
+                }
+            ],
+            tool_choice={
+                "type": "function",
+                "function": {"name": tool_name},
+            },
+            extra_headers=extra_headers,
+            **model_params,
+            **(self.extra_body or {}),
+        )
+        message = response.choices[0].message
+        for tool_call in message.tool_calls or []:
+            if tool_call.function.name != tool_name:
+                continue
+            completion = output_format.model_validate_json(
+                tool_call.function.arguments
+            )
+            return ChatInvokeCompletion(
+                completion=completion,
+                usage=self._get_usage(response),
+            )
+
+        # A forced tool call should not return text, but accepting a valid JSON
+        # fallback makes the adapter robust to OpenRouter provider routing.
+        if message.content:
+            return ChatInvokeCompletion(
+                completion=output_format.model_validate_json(message.content),
+                usage=self._get_usage(response),
+            )
+        raise ModelProviderError(
+            message="Claude returned neither an agent_output tool call nor JSON",
+            status_code=500,
+            model=self.name,
+        )
 
     async def ainvoke(
         self,
@@ -82,6 +199,16 @@ class CompatibleChatOpenRouter(ChatOpenRouter):
                 remove_min_items=True,
                 remove_defaults=True,
             )
+            # Anthropic's strict-output implementation rejects JSON Schema
+            # numeric validation keywords used by browser-use's generated
+            # AgentOutput models (for example, ``minimum`` on action indices).
+            # Output objects are still validated against the original Pydantic
+            # model after receipt.
+            if self.model.startswith("anthropic/"):
+                schema = _remove_schema_keywords(
+                    schema,
+                    ANTHROPIC_UNSUPPORTED_NUMERIC_SCHEMA_KEYWORDS,
+                )
             response_format_schema: JSONSchema = {
                 "name": "agent_output",
                 "strict": True,
@@ -96,6 +223,13 @@ class CompatibleChatOpenRouter(ChatOpenRouter):
                 }.items()
                 if value is not None
             }
+            if self.model.startswith("anthropic/"):
+                return await self._ainvoke_anthropic_tool(
+                    openrouter_messages,
+                    output_format,
+                    extra_headers=extra_headers,
+                    model_params=model_params,
+                )
             response = await self.get_client().chat.completions.create(
                 model=self.model,
                 messages=openrouter_messages,
