@@ -6,10 +6,14 @@ from pathlib import Path
 import yaml
 
 from cross_harness_pipeline import (
+    TIMING_FEATURES,
     XGBClassifier,
     _coverage,
+    _load_examples,
     _manifest_rows,
+    _manifest_path,
     _mixed_assignment,
+    _read_jsonl,
     _selected_record_index,
     evaluate_model,
     load_config,
@@ -153,9 +157,27 @@ class CrossHarnessManifestTests(unittest.TestCase):
         self.assertEqual(result["class_names"], self.agents)
         summary = summarize_results(self.cfg)
         self.assertIn(
-            "midscene,browser_use,RandomForest",
+            "midscene,browser_use,full,RandomForest",
             summary.read_text(),
         )
+
+    def test_feature_groups_partition_full_schema_without_touching_traces(self):
+        self._populate()
+        records = scan_inventory(self.cfg)
+        prepare_manifests(self.cfg, records)
+        rows = _read_jsonl(
+            _manifest_path(self.cfg, "wiki", "train", "midscene")
+        )
+        _, _, _, full = _load_examples(rows, False, self.cfg, "full")
+        _, _, _, timing = _load_examples(
+            rows, False, self.cfg, "timing_only"
+        )
+        _, _, _, non_timing = _load_examples(
+            rows, False, self.cfg, "non_timing"
+        )
+        self.assertEqual(set(timing), set(TIMING_FEATURES))
+        self.assertFalse(set(timing) & set(non_timing))
+        self.assertEqual(set(full), set(timing) | set(non_timing))
 
     @unittest.skipUnless(XGBClassifier is not None, "xgboost is not installed")
     def test_xgboost_quick_path_runs_on_cpu(self):
@@ -230,6 +252,10 @@ class CrossHarnessManifestTests(unittest.TestCase):
             set(self.agents),
         )
         self.assertTrue(all(fold["n_test"] == 8 for fold in result["folds"]))
+        self.assertIn("fold_auroc_mean", result)
+        self.assertTrue(
+            all("auroc" in fold["test"] for fold in result["folds"])
+        )
 
 
 if __name__ == "__main__":

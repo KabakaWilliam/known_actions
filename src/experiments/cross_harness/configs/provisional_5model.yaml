@@ -5,8 +5,8 @@
 # It must not be used for the paper's final six-model results.
 experiment:
   id: multi_harness_identity_provisional_5model
-  traces_dir: traces
-  artifact_root: artifacts/classifiers/multi_harness_identity/provisional_5model
+  traces_dir: ../../../traces
+  artifact_root: ../../../artifacts/classifiers/multi_harness_identity/provisional_5model
   sampling_seed: 42
   classifier_seed: 42
 
@@ -36,6 +36,44 @@ datasets:
       train: 100
       val: 50
       test: 50
+
+feature_groups:
+  full:
+    include: "*"
+  timing_only:
+    include:
+      - total_duration_s
+      - t_first_action_ms
+      - mean_iei_ms
+      - std_iei_ms
+      - median_iei_ms
+      - p10_iei_ms
+      - p90_iei_ms
+      - iei_trend
+      - mean_click_iei_ms
+      - std_click_iei_ms
+      - mean_nav_iei_ms
+      - std_nav_iei_ms
+      - max_page_dwell_ms
+      - mean_key_iei_ms
+      - std_key_iei_ms
+  non_timing:
+    exclude:
+      - total_duration_s
+      - t_first_action_ms
+      - mean_iei_ms
+      - std_iei_ms
+      - median_iei_ms
+      - p10_iei_ms
+      - p90_iei_ms
+      - iei_trend
+      - mean_click_iei_ms
+      - std_click_iei_ms
+      - mean_nav_iei_ms
+      - std_nav_iei_ms
+      - max_page_dwell_ms
+      - mean_key_iei_ms
+      - std_key_iei_ms
 
 classifiers:
   primary: XGBoost

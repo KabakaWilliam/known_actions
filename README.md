@@ -378,14 +378,14 @@ Audit collection coverage at any time (safe while collection is running):
 
 ```bash
 cd src
-python cross_harness_pipeline.py --config cross_harness_config.yaml audit
+python -m experiments.cross_harness.pipeline audit
 ```
 
 Once all six browser-use collections are complete, freeze the common task
 universe:
 
 ```bash
-python cross_harness_pipeline.py --config cross_harness_config.yaml prepare
+python -m experiments.cross_harness.pipeline prepare
 ```
 
 `prepare` requires the configured minimum number of tasks that have a valid
@@ -396,7 +396,7 @@ different frozen manifest. Generated manifests and models live under
 XGBoost is the primary classifier:
 
 ```bash
-python cross_harness_pipeline.py --config cross_harness_config.yaml run-grid \
+python -m experiments.cross_harness.pipeline run-grid \
   --classifier XGBoost
 ```
 
@@ -414,8 +414,8 @@ leave-one-model-out fold trains on both harnesses from the remaining models
 and tests on both harnesses from the entirely unseen held-out model:
 
 ```bash
-python cross_harness_pipeline.py --config cross_harness_config.yaml \
-  harness-detector --classifier XGBoost
+python -m experiments.cross_harness.pipeline harness-detector \
+  --classifier XGBoost
 ```
 
 While a final model is still collecting, the explicitly provisional
@@ -423,15 +423,16 @@ five-model config can exercise the complete CPU path without writing into the
 final six-model artifact namespace:
 
 ```bash
-python cross_harness_pipeline.py \
-  --config cross_harness_config.provisional.yaml prepare
+python -m experiments.cross_harness.pipeline \
+  --config experiments/cross_harness/configs/provisional_5model.yaml prepare
 
-python cross_harness_pipeline.py \
-  --config cross_harness_config.provisional.yaml run-grid \
+python -m experiments.cross_harness.pipeline \
+  --config experiments/cross_harness/configs/provisional_5model.yaml run-grid \
   --classifier XGBoost --quick --xgb-device cpu
 
-python cross_harness_pipeline.py \
-  --config cross_harness_config.provisional.yaml harness-detector \
+python -m experiments.cross_harness.pipeline \
+  --config experiments/cross_harness/configs/provisional_5model.yaml \
+  harness-detector \
   --classifier XGBoost --quick --xgb-device cpu
 ```
 
@@ -439,14 +440,26 @@ For pipeline validation without taking a GPU from trace collection, use the
 small CPU Random Forest path on one cell:
 
 ```bash
-python cross_harness_pipeline.py --config cross_harness_config.yaml train \
+python -m experiments.cross_harness.pipeline train \
   --dataset 2wikimultihop --train-policy midscene \
   --classifier RandomForest --quick
 
-python cross_harness_pipeline.py --config cross_harness_config.yaml evaluate \
+python -m experiments.cross_harness.pipeline evaluate \
   --dataset 2wikimultihop --train-policy midscene \
   --eval-policy browser_use --classifier RandomForest
 ```
+
+Timing/non-timing ablations select features during extraction and do not alter
+trace files:
+
+```bash
+python -m experiments.cross_harness.pipeline run-ablation \
+  --classifier XGBoost --xgb-device cpu
+```
+
+The canonical experiment catalog and directory guide are in
+`src/experiments/README.md` and `src/scripts/README.md`. The former
+`cross_harness_pipeline.py` command remains as a compatibility entry point.
 
 LSTM is supported as the next-priority classifier. `--quick` keeps its smoke
 fit and evaluation on CPU; full LSTM and the default XGBoost configuration use

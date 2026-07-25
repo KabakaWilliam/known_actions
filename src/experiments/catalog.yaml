@@ -1,0 +1,25 @@
+experiments:
+  cross_harness_identity_final:
+    question: How well does model identity transfer within, across, and across a balanced mix of harnesses?
+    entrypoint: experiments.cross_harness.pipeline
+    config: experiments/cross_harness/configs/final_6model.yaml
+    commands: [audit, prepare, run-grid, summarize]
+    status: waiting_for_complete_six_model_collection
+  cross_harness_identity_provisional:
+    question: Does the complete pipeline work on the currently complete five-model intersection?
+    entrypoint: experiments.cross_harness.pipeline
+    config: experiments/cross_harness/configs/provisional_5model.yaml
+    commands: [audit, prepare, run-grid, summarize]
+    status: validated
+  harness_detection_lomo:
+    question: Can the harness be predicted for a model excluded entirely from detector training?
+    entrypoint: experiments.cross_harness.pipeline
+    command: harness-detector
+    metrics: [macro_f1, auroc, average_precision]
+    status: provisional_validated
+  timing_feature_ablation:
+    question: How much identity signal comes from timing versus non-timing browser-visible behavior?
+    entrypoint: experiments.cross_harness.pipeline
+    command: run-ablation
+    feature_groups: [full, timing_only, non_timing]
+    status: implemented
