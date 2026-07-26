@@ -3,6 +3,9 @@ campaign:
   harness: browser_use
   run_root: campaign_runs
   vllm_executable: /opt/anaconda/envs/known_ag/bin/vllm
+  # Used by any local model whose engine block is `sglang:` instead of
+  # `vllm:`. The two inference stacks remain isolated.
+  sglang_executable: /VData/linna4335/known_actions/.conda-runtime/envs/w_serve/bin/python
   local_workers: 10
   # Keep paid-provider overshoot bounded if a key reaches its spend limit.
   openrouter_workers: 5
@@ -10,6 +13,7 @@ campaign:
   max_collection_rounds: 2
   max_existing_gpu_memory_mib: 2048
   vllm_smoke_timeout_s: 120
+  sglang_smoke_timeout_s: 120
   # A busy local model is recorded as blocked; cloud collection still proceeds.
   continue_on_resource_blocked: true
 

@@ -1,0 +1,25 @@
+# RETIRED: launcher for the former 30/15/15 subset pilot.
+campaign:
+  experiment_config: experiments/policy_normalization/configs/retired_subset_pilot/webshop_gemma_canonical_backfill.yaml
+  harness: browser_use
+  run_root: campaign_runs/policy_normalization_canonical_backfill
+  vllm_executable: /opt/anaconda/envs/known_ag/bin/vllm
+  local_workers: 10
+  max_collection_rounds: 2
+  max_existing_gpu_memory_mib: 2048
+  vllm_smoke_timeout_s: 120
+  continue_on_resource_blocked: false
+
+local_models:
+  - agent_id: gemma_4_26B_A4B_it
+    vllm:
+      model: google/gemma-4-26B-A4B-it
+      served_model_name: google/gemma-4-26B-A4B-it
+      gpus: [0]
+      port: 3030
+      startup_timeout_s: 3600
+      args:
+        - --max-model-len
+        - "32768"
+        - --gpu-memory-utilization
+        - "0.90"

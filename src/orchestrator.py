@@ -68,6 +68,21 @@ def load_experiment(cfg_path: Path) -> dict:
         return yaml.safe_load(f)
 
 
+def resolve_output_dir(exp: dict) -> Path:
+    """Resolve a collection root that remains inside the bound workspace."""
+    configured = Path(exp.get("run", {}).get("trace_output_dir", "traces"))
+    resolved = (
+        configured if configured.is_absolute() else PROJECT_DIR / configured
+    ).resolve()
+    try:
+        resolved.relative_to(PROJECT_DIR)
+    except ValueError as exc:
+        raise ValueError(
+            "run.trace_output_dir must resolve inside the source workspace"
+        ) from exc
+    return resolved
+
+
 def resolve_agents(exp: dict, registry: dict) -> list[dict]:
     """Merge experiment agent list with registry definitions and harnesses.
 
@@ -217,7 +232,12 @@ def format_cmd_for_display(cmd: list[str]) -> str:
 
 # ─── Resume helpers ───────────────────────────────────────────────────────────
 
-def find_completed_counts(agent_id: str, dataset_name: str, harness: str) -> dict[str, int]:
+def find_completed_counts(
+    agent_id: str,
+    dataset_name: str,
+    harness: str,
+    output_dir: Path | None = None,
+) -> dict[str, int]:
     """Return {question: n_valid_traces} for already-collected episodes.
 
     Counts traces that are not API-level failures and have DOM events.
@@ -225,7 +245,7 @@ def find_completed_counts(agent_id: str, dataset_name: str, harness: str) -> dic
     as valid behavioral traces — only fatal API errors are excluded.
     """
     _fatal = [p.lower() for p in FATAL_API_PATTERNS]
-    dataset_dir = OUTPUT_DIR / agent_id / dataset_name
+    dataset_dir = (output_dir or OUTPUT_DIR) / agent_id / dataset_name
     if not dataset_dir.exists():
         return {}
     counts: dict[str, int] = defaultdict(int)
@@ -432,7 +452,7 @@ def _terminate_active_processes(grace_s: float = 5) -> None:
 
 
 def main():
-    global SIF_PATH
+    global OUTPUT_DIR, SIF_PATH
     parser = argparse.ArgumentParser(
         description="Run agent tracing experiments.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -465,6 +485,7 @@ def main():
     registry = load_registry()
     exp      = load_experiment(args.config)
     run_cfg  = exp.get("run", {})
+    OUTPUT_DIR = resolve_output_dir(exp)
     configured_sif = Path(run_cfg.get("sif_path", DEFAULT_SIF_PATH.name))
     SIF_PATH = configured_sif if configured_sif.is_absolute() else PROJECT_DIR / configured_sif
     SIF_PATH = SIF_PATH.resolve()
@@ -555,8 +576,10 @@ def main():
     for agent, dataset in itertools.product(agents, datasets):
         key           = (agent["agent_id"], agent["harness"], dataset["name"])
         counts        = completed_counts[key]
+        relative_output = OUTPUT_DIR.relative_to(PROJECT_DIR)
         container_out = (
-            f"/app/workspace/traces/{agent['agent_id']}/{dataset['name']}/"
+            f"/app/workspace/{relative_output.as_posix()}/"
+            f"{agent['agent_id']}/{dataset['name']}/"
             f"{agent['harness']}/{run_ts}"
         )
         host_out      = (

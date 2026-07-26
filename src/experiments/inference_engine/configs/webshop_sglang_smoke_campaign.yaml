@@ -1,0 +1,85 @@
+campaign:
+  experiment_config: experiments/inference_engine/configs/webshop_sglang_smoke_collection.yaml
+  harness: browser_use
+  run_root: campaign_runs/experiments/inference_engine_webshop_sglang_smoke_v1
+  sglang_executable: /VData/linna4335/known_actions/.conda-runtime/envs/w_serve_sglang_0512/bin/python
+  local_workers: 2
+  max_collection_rounds: 3
+  max_existing_gpu_memory_mib: 2048
+  sglang_smoke_timeout_s: 120
+  continue_on_resource_blocked: false
+
+local_models:
+  - agent_id: glm_4.6v
+    sglang:
+      model: zai-org/GLM-4.6V
+      served_model_name: glm-4.6v
+      gpus: [0, 1, 2, 3]
+      port: 3031
+      startup_timeout_s: 3600
+      args:
+        - --tp-size
+        - "4"
+        - --mem-fraction-static
+        - "0.90"
+        - --tool-call-parser
+        - glm
+        - --reasoning-parser
+        - glm45
+
+  - agent_id: qwen3_5_27b
+    sglang:
+      model: Qwen/Qwen3.5-27B
+      served_model_name: Qwen/Qwen3.5-27B
+      gpus: [0]
+      port: 3031
+      startup_timeout_s: 3600
+      args:
+        - --tp-size
+        - "1"
+        - --mem-fraction-static
+        - "0.85"
+        - --context-length
+        - "163840"
+        - --tool-call-parser
+        - qwen
+        - --reasoning-parser
+        - qwen3
+
+  - agent_id: gemma_4_26B_A4B_it
+    sglang:
+      model: google/gemma-4-26B-A4B-it
+      served_model_name: google/gemma-4-26B-A4B-it
+      gpus: [0]
+      port: 3030
+      startup_timeout_s: 3600
+      args:
+        - --tp-size
+        - "1"
+        - --mem-fraction-static
+        - "0.90"
+        - --context-length
+        - "32768"
+        - --tool-call-parser
+        - gemma4
+        - --reasoning-parser
+        - gemma4
+
+  - agent_id: qwen3vl_30b_a3b
+    sglang:
+      model: Qwen/Qwen3-VL-30B-A3B-Instruct
+      served_model_name: Qwen/Qwen3-VL-30B-A3B-Instruct
+      gpus: [0, 3]
+      port: 3030
+      startup_timeout_s: 3600
+      args:
+        - --tp-size
+        - "2"
+        - --mem-fraction-static
+        - "0.75"
+        - --context-length
+        - "163840"
+        - --tool-call-parser
+        - qwen
+        - --reasoning-parser
+        - qwen3

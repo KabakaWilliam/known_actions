@@ -147,8 +147,32 @@ def load_config(path: Path) -> dict[str, Any]:
     exp = cfg["experiment"]
     exp["traces_dir"] = _resolve_path(path, exp["traces_dir"]).resolve()
     exp["artifact_root"] = _resolve_path(path, exp["artifact_root"]).resolve()
+    roster = cfg.get("model_roster")
+    if roster is not None:
+        configured_agents = set(cfg["agents"])
+        roster_agents = set(roster)
+        if roster_agents != configured_agents:
+            raise ValueError(
+                "model_roster keys must exactly match agents: "
+                f"missing={sorted(configured_agents - roster_agents)}, "
+                f"extra={sorted(roster_agents - configured_agents)}"
+            )
+        for agent_id, model_spec in roster.items():
+            aliases = model_spec.get("trace_aliases")
+            if not isinstance(aliases, list) or not aliases:
+                raise ValueError(
+                    f"model_roster.{agent_id}.trace_aliases must be a " "non-empty list"
+                )
     cfg["_config_path"] = path
     return cfg
+
+
+def _artifact_dir(cfg: dict[str, Any], key: str, legacy_name: str) -> Path:
+    """Resolve a named artifact component while preserving legacy layouts."""
+    relative = Path(cfg.get("artifact_layout", {}).get(key, legacy_name))
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"artifact_layout.{key} must be a safe relative path")
+    return cfg["experiment"]["artifact_root"] / relative
 
 
 def _infer_harness(relative: Path, episode: dict[str, Any]) -> tuple[str, str | None]:
@@ -174,6 +198,27 @@ def _trace_valid(episode: dict[str, Any], harness_error: str | None) -> bool:
     if any(pattern in error for pattern in INVALID_ERROR_PATTERNS):
         return False
     return bool((episode.get("dom_trace") or {}).get("events"))
+
+
+def _model_identity_error(
+    cfg: dict[str, Any],
+    agent_id: str,
+    meta: dict[str, Any],
+) -> str | None:
+    metadata_agent = str(meta.get("agent_id") or "")
+    if metadata_agent and metadata_agent != agent_id:
+        return f"agent mismatch: path={agent_id}, metadata={metadata_agent}"
+    roster = cfg.get("model_roster")
+    if roster is None:
+        return None
+    observed = str(meta.get("model_name") or "")
+    allowed = {str(value) for value in roster[agent_id]["trace_aliases"]}
+    if observed not in allowed:
+        return (
+            f"model mismatch for {agent_id}: metadata={observed!r}, "
+            f"allowed={sorted(allowed)!r}"
+        )
+    return None
 
 
 def scan_inventory(cfg: dict[str, Any]) -> list[TraceRecord]:
@@ -211,6 +256,13 @@ def scan_inventory(cfg: dict[str, Any]) -> list[TraceRecord]:
                     relative = path.relative_to(traces_dir)
                     harness, harness_error = _infer_harness(relative, episode)
                     meta = episode.get("meta") or {}
+                    model_error = _model_identity_error(cfg, agent_id, meta)
+                    trace_error = (
+                        "; ".join(
+                            error for error in (harness_error, model_error) if error
+                        )
+                        or None
+                    )
                     question = str(meta.get("question") or "")
                     events = (episode.get("dom_trace") or {}).get("events") or []
                     verification = episode.get("verification") or {}
@@ -228,18 +280,17 @@ def scan_inventory(cfg: dict[str, Any]) -> list[TraceRecord]:
                             task_id=_task_id(dataset, question) if question else "",
                             collection_run_id=path.parent.name,
                             task_success=bool(success) if success is not None else None,
-                            valid_trace=_trace_valid(episode, harness_error) and bool(question),
+                            valid_trace=_trace_valid(episode, trace_error)
+                            and bool(question),
                             n_events=len(events),
-                            error=harness_error or episode.get("error"),
+                            error=trace_error or episode.get("error"),
                             timestamp=str(meta.get("timestamp") or ""),
                         )
                     )
     return records
 
 
-def _coverage(
-    cfg: dict[str, Any], records: list[TraceRecord]
-) -> dict[str, Any]:
+def _coverage(cfg: dict[str, Any], records: list[TraceRecord]) -> dict[str, Any]:
     valid = [record for record in records if record.valid_trace]
     valid_counts: Counter[tuple[str, str, str, str]] = Counter(
         (r.dataset, r.split, r.harness, r.agent_id) for r in valid
@@ -273,8 +324,10 @@ def _coverage(
 
 def print_audit(cfg: dict[str, Any], records: list[TraceRecord]) -> dict[str, Any]:
     coverage = _coverage(cfg, records)
-    print(f"Inventory: {coverage['n_json_files']} JSON files, "
-          f"{coverage['n_valid_traces']} valid traces")
+    print(
+        f"Inventory: {coverage['n_json_files']} JSON files, "
+        f"{coverage['n_valid_traces']} valid traces"
+    )
     for dataset, dataset_cfg in cfg["datasets"].items():
         print(f"\n{dataset}")
         for split in SPLITS:
@@ -323,9 +376,7 @@ def _selected_record_index(
             ].append(record)
     selected = {}
     for key, candidates in grouped.items():
-        selected[key] = min(
-            candidates, key=lambda r: (r.timestamp, r.trace_path)
-        )
+        selected[key] = min(candidates, key=lambda r: (r.timestamp, r.trace_path))
     return selected
 
 
@@ -382,7 +433,7 @@ def prepare_manifests(
 ) -> dict[str, Any]:
     coverage = _coverage(cfg, records)
     artifact_root: Path = cfg["experiment"]["artifact_root"]
-    manifests_root = artifact_root / "splits"
+    manifests_root = _artifact_dir(cfg, "frozen_manifests", "splits")
     selected = _selected_record_index(records)
     manifest_hashes: dict[str, str] = {}
     selected_task_counts: dict[str, dict[str, int]] = defaultdict(dict)
@@ -392,9 +443,7 @@ def prepare_manifests(
         for split in SPLITS:
             task_ids = coverage["common_task_ids"][dataset][split]
             expected = int(dataset_cfg["expected_tasks"][split])
-            minimum = int(
-                (dataset_cfg.get("minimum_common_tasks") or {}).get(split, 1)
-            )
+            minimum = int((dataset_cfg.get("minimum_common_tasks") or {}).get(split, 1))
             if len(task_ids) < minimum:
                 raise RuntimeError(
                     f"{dataset}/{split} has {len(task_ids)} tasks complete across "
@@ -409,18 +458,16 @@ def prepare_manifests(
             selected_task_counts[dataset][split] = len(task_ids)
             all_split_tasks[split] = set(task_ids)
             for policy in POLICIES:
-                rows = _manifest_rows(
-                    cfg, selected, dataset, split, policy, task_ids
-                )
+                rows = _manifest_rows(cfg, selected, dataset, split, policy, task_ids)
                 path = (
                     manifests_root
                     / dataset
                     / f"seed={cfg['experiment']['sampling_seed']}"
                     / f"{split}_{policy}.jsonl"
                 )
-                manifest_hashes[str(path.relative_to(artifact_root))] = (
-                    _write_frozen_jsonl(path, rows, force)
-                )
+                manifest_hashes[
+                    str(path.relative_to(artifact_root))
+                ] = _write_frozen_jsonl(path, rows, force)
         for left_index, left in enumerate(SPLITS):
             for right in SPLITS[left_index + 1 :]:
                 overlap = all_split_tasks[left] & all_split_tasks[right]
@@ -429,12 +476,20 @@ def prepare_manifests(
                         f"{dataset}: {len(overlap)} task IDs overlap {left}/{right}"
                     )
 
-    inventory_rows = [asdict(record) for record in sorted(
-        records,
-        key=lambda r: (
-            r.dataset, r.split, r.harness, r.agent_id, r.task_id, r.trace_path
-        ),
-    )]
+    inventory_rows = [
+        asdict(record)
+        for record in sorted(
+            records,
+            key=lambda r: (
+                r.dataset,
+                r.split,
+                r.harness,
+                r.agent_id,
+                r.task_id,
+                r.trace_path,
+            ),
+        )
+    ]
     inventory_hash = _write_frozen_jsonl(
         artifact_root / "trace_inventory.jsonl", inventory_rows, force
     )
@@ -457,10 +512,13 @@ def prepare_manifests(
     if manifest_path.exists() and not force:
         old = json.loads(manifest_path.read_text())
         comparable = {
-            key: value for key, value in experiment_manifest.items()
+            key: value
+            for key, value in experiment_manifest.items()
             if key != "created_at"
         }
-        old_comparable = {key: value for key, value in old.items() if key != "created_at"}
+        old_comparable = {
+            key: value for key, value in old.items() if key != "created_at"
+        }
         if old_comparable != comparable:
             raise RuntimeError(
                 f"refusing to replace frozen experiment manifest: {manifest_path}"
@@ -472,8 +530,7 @@ def prepare_manifests(
 
 def _manifest_path(cfg: dict[str, Any], dataset: str, split: str, policy: str) -> Path:
     return (
-        cfg["experiment"]["artifact_root"]
-        / "splits"
+        _artifact_dir(cfg, "frozen_manifests", "splits")
         / dataset
         / f"seed={cfg['experiment']['sampling_seed']}"
         / f"{split}_{policy}.jsonl"
@@ -507,9 +564,7 @@ def _load_examples(
         if include_sequences:
             sequences.append(extract_sequence(episode))
         labels.append(row["agent_id"])
-    feature_names = _resolve_feature_group(
-        cfg or {}, feature_group, feature_names
-    )
+    feature_names = _resolve_feature_group(cfg or {}, feature_group, feature_names)
     X = np.asarray(
         [[feature[name] for name in feature_names] for feature in features],
         dtype=float,
@@ -534,8 +589,7 @@ def _resolve_feature_group(
     groups = {**default_groups, **configured}
     if feature_group not in groups:
         raise ValueError(
-            f"unknown feature group {feature_group!r}; "
-            f"choose from {sorted(groups)}"
+            f"unknown feature group {feature_group!r}; " f"choose from {sorted(groups)}"
         )
     spec = groups[feature_group] or {}
     include = spec.get("include")
@@ -574,8 +628,7 @@ def _model_dir(
     feature_group: str = "full",
 ) -> Path:
     return (
-        cfg["experiment"]["artifact_root"]
-        / "models"
+        _artifact_dir(cfg, "model_identity", "models")
         / dataset
         / f"train={train_policy}"
         / f"features={feature_group}"
@@ -618,9 +671,78 @@ def _binary_ranking_metrics(
     return {
         "positive_class": positive_class,
         "auroc": float(roc_auc_score(binary_true, scores)),
-        "average_precision": float(
-            average_precision_score(binary_true, scores)
-        ),
+        "average_precision": float(average_precision_score(binary_true, scores)),
+    }
+
+
+def _stratified_bootstrap_macro_f1(
+    y_true: np.ndarray,
+    predictions_by_seed: list[np.ndarray],
+    n_classes: int,
+    *,
+    samples: int,
+    confidence: float,
+    seed: int,
+) -> dict[str, Any] | None:
+    """Bootstrap test traces while averaging performance across model seeds."""
+    if samples <= 0:
+        return None
+    if not 0 < confidence < 1:
+        raise ValueError("bootstrap confidence must be between zero and one")
+    class_indices = [
+        np.flatnonzero(y_true == class_index) for class_index in range(n_classes)
+    ]
+    if any(len(indices) == 0 for indices in class_indices):
+        raise RuntimeError("stratified bootstrap requires every class in test")
+    rng = np.random.default_rng(seed)
+    selected = np.concatenate(
+        [
+            rng.choice(
+                indices,
+                size=(samples, len(indices)),
+                replace=True,
+            )
+            for indices in class_indices
+        ],
+        axis=1,
+    )
+    true_bootstrap = y_true[selected]
+    seed_scores = []
+    for predictions in predictions_by_seed:
+        predicted_bootstrap = predictions[selected]
+        class_scores = []
+        for class_index in range(n_classes):
+            true_positive = np.sum(
+                (true_bootstrap == class_index) & (predicted_bootstrap == class_index),
+                axis=1,
+            )
+            false_positive = np.sum(
+                (true_bootstrap != class_index) & (predicted_bootstrap == class_index),
+                axis=1,
+            )
+            false_negative = np.sum(
+                (true_bootstrap == class_index) & (predicted_bootstrap != class_index),
+                axis=1,
+            )
+            denominator = 2 * true_positive + false_positive + false_negative
+            class_scores.append(
+                np.divide(
+                    2 * true_positive,
+                    denominator,
+                    out=np.zeros(samples, dtype=float),
+                    where=denominator != 0,
+                )
+            )
+        seed_scores.append(np.mean(class_scores, axis=0))
+    scores = np.mean(seed_scores, axis=0)
+    alpha = 1.0 - confidence
+    return {
+        "method": "stratified_percentile_over_test_traces",
+        "seed_aggregation": "mean_macro_f1",
+        "samples": samples,
+        "confidence": confidence,
+        "lower": float(np.quantile(scores, alpha / 2)),
+        "upper": float(np.quantile(scores, 1 - alpha / 2)),
     }
 
 
@@ -631,8 +753,7 @@ def _make_lstm_tensors(sequences):
     ]
     time_tensors = [
         torch.tensor(
-            [[event[1], event[2], event[3], event[4], event[5]]
-             for event in sequence],
+            [[event[1], event[2], event[3], event[4], event[5]] for event in sequence],
             dtype=torch.float,
         ).reshape(-1, _N_CONTINUOUS)
         for sequence in sequences
@@ -738,9 +859,7 @@ def train_model(
             "timing/non-timing ablations are currently tabular-only; the LSTM "
             "event sequence contains timing even when tabular timing is removed"
         )
-    model_dir = _model_dir(
-        cfg, dataset, train_policy, seed, classifier, feature_group
-    )
+    model_dir = _model_dir(cfg, dataset, train_policy, seed, classifier, feature_group)
     bundle_path = model_dir / "model.pkl"
     if bundle_path.exists() and not force:
         print(f"[SKIP] trained model exists: {bundle_path}")
@@ -776,7 +895,8 @@ def train_model(
         if quick or not cfg["classifiers"]["random_forest"].get("search", True):
             best_params = {"n_estimators": 100, "max_depth": 15}
             model = RandomForestClassifier(
-                **best_params, random_state=seed,
+                **best_params,
+                random_state=seed,
                 n_jobs=int(cfg["classifiers"].get("cpu_jobs", 8)),
             ).fit(X_train, y_train)
         else:
@@ -816,9 +936,7 @@ def train_model(
             search = RandomizedSearchCV(
                 base,
                 XGB_PARAM_DIST,
-                n_iter=int(cfg["classifiers"]["xgboost"].get(
-                    "search_iterations", 40
-                )),
+                n_iter=int(cfg["classifiers"]["xgboost"].get("search_iterations", 40)),
                 cv=3,
                 scoring="f1_macro",
                 n_jobs=1,
@@ -875,9 +993,7 @@ def train_model(
             seed,
             device,
         )
-        y_val_pred, _ = _predict_lstm(
-            model, seq_val, X_val_scaled, device
-        )
+        y_val_pred, _ = _predict_lstm(model, seq_val, X_val_scaled, device)
     else:
         raise ValueError(f"unsupported classifier: {classifier}")
 
@@ -901,7 +1017,8 @@ def train_model(
         "model": None if classifier == "LSTM" else model,
         "lstm_device": "cpu" if classifier == "LSTM" and quick else None,
         "lstm_epochs": (
-            2 if classifier == "LSTM" and quick
+            2
+            if classifier == "LSTM" and quick
             else int(cfg["classifiers"]["lstm"].get("epochs", 50))
         ),
         "train_manifest": str(_manifest_path(cfg, dataset, "train", train_policy)),
@@ -952,9 +1069,7 @@ def evaluate_model(
     feature_group: str = "full",
     force: bool = False,
 ) -> Path:
-    model_dir = _model_dir(
-        cfg, dataset, train_policy, seed, classifier, feature_group
-    )
+    model_dir = _model_dir(cfg, dataset, train_policy, seed, classifier, feature_group)
     bundle_path = model_dir / "model.pkl"
     if not bundle_path.exists():
         raise FileNotFoundError(f"trained model not found: {bundle_path}")
@@ -985,8 +1100,7 @@ def evaluate_model(
         X_model = scaler.transform(X)
         requested_device = bundle.get("lstm_device")
         device = torch.device(
-            requested_device
-            or ("cuda" if torch.cuda.is_available() else "cpu")
+            requested_device or ("cuda" if torch.cuda.is_available() else "cpu")
         )
         params = bundle["best_params"]
         model = AgentLSTM(
@@ -998,9 +1112,7 @@ def evaluate_model(
             n_rf_features=X.shape[1],
             dropout=float(params["dropout"]),
         ).to(device)
-        model.load_state_dict(
-            torch.load(model_dir / "model.pt", map_location=device)
-        )
+        model.load_state_dict(torch.load(model_dir / "model.pt", map_location=device))
         y_pred, probabilities = _predict_lstm(model, sequences, X_model, device)
     else:
         model = bundle["model"]
@@ -1012,6 +1124,29 @@ def evaluate_model(
     metrics = _classification_metrics(
         y_true, np.asarray(y_pred), list(encoder.classes_)
     )
+    bootstrap_samples = int(cfg.get("evaluation", {}).get("bootstrap_samples", 2000))
+    bootstrap_confidence = float(
+        cfg.get("evaluation", {}).get("bootstrap_confidence", 0.95)
+    )
+    bootstrap_seed = int.from_bytes(
+        hashlib.sha256(
+            (
+                f"{seed}\0{dataset}\0{train_policy}\0{eval_policy}\0"
+                f"{classifier}\0{feature_group}"
+            ).encode()
+        ).digest()[:8],
+        "big",
+    )
+    bootstrap = _stratified_bootstrap_macro_f1(
+        y_true,
+        [np.asarray(y_pred)],
+        len(encoder.classes_),
+        samples=bootstrap_samples,
+        confidence=bootstrap_confidence,
+        seed=bootstrap_seed,
+    )
+    if bootstrap is not None:
+        metrics["macro_f1_bootstrap"] = bootstrap
     predictions = []
     for index, row in enumerate(rows):
         prediction = {
@@ -1019,9 +1154,7 @@ def evaluate_model(
             "task_id": row["task_id"],
             "agent_id": row["agent_id"],
             "true_label": labels[index],
-            "predicted_label": encoder.inverse_transform(
-                [int(y_pred[index])]
-            )[0],
+            "predicted_label": encoder.inverse_transform([int(y_pred[index])])[0],
             "dataset": dataset,
             "split": "test",
             "harness": row["harness"],
@@ -1073,13 +1206,14 @@ GRID = {
 
 
 def summarize_results(cfg: dict[str, Any]) -> Path:
-    artifact_root: Path = cfg["experiment"]["artifact_root"]
     rows = []
-    models_root = artifact_root / "models"
+    per_model_rows = []
+    models_root = _artifact_dir(cfg, "model_identity", "models")
     if models_root.exists():
         for path in sorted(models_root.rglob("evaluations/test=*/results.json")):
             result = json.loads(path.read_text())
             metrics = result["metrics"]
+            bootstrap = metrics.get("macro_f1_bootstrap") or {}
             rows.append(
                 {
                     "dataset": result["dataset"],
@@ -1091,11 +1225,32 @@ def summarize_results(cfg: dict[str, Any]) -> Path:
                     "n_test": result["n_test"],
                     "accuracy": metrics["accuracy"],
                     "macro_f1": metrics["macro_f1"],
+                    "macro_f1_ci_lower": bootstrap.get("lower"),
+                    "macro_f1_ci_upper": bootstrap.get("upper"),
                     "weighted_f1": metrics["weighted_f1"],
                     "results_path": str(path),
                 }
             )
-    summary_root = artifact_root / "summaries"
+            report = metrics["classification_report"]
+            for agent_id in result["class_names"]:
+                class_metrics = report[agent_id]
+                per_model_rows.append(
+                    {
+                        "dataset": result["dataset"],
+                        "train_policy": result["train_policy"],
+                        "eval_policy": result["eval_policy"],
+                        "feature_group": result.get("feature_group", "full"),
+                        "classifier": result["classifier"],
+                        "seed": result["seed"],
+                        "agent_id": agent_id,
+                        "precision": float(class_metrics["precision"]),
+                        "recall": float(class_metrics["recall"]),
+                        "f1": float(class_metrics["f1-score"]),
+                        "support": int(class_metrics["support"]),
+                        "results_path": str(path),
+                    }
+                )
+    summary_root = _artifact_dir(cfg, "identity_summaries", "summaries")
     summary_root.mkdir(parents=True, exist_ok=True)
     json_path = summary_root / "results.json"
     csv_path = summary_root / "results.csv"
@@ -1110,6 +1265,8 @@ def summarize_results(cfg: dict[str, Any]) -> Path:
         "n_test",
         "accuracy",
         "macro_f1",
+        "macro_f1_ci_lower",
+        "macro_f1_ci_upper",
         "weighted_f1",
         "results_path",
     ]
@@ -1117,6 +1274,189 @@ def summarize_results(cfg: dict[str, Any]) -> Path:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
+
+    per_model_json = summary_root / "per_model_metrics.json"
+    per_model_csv = summary_root / "per_model_metrics.csv"
+    per_model_json.write_text(json.dumps(per_model_rows, indent=2) + "\n")
+    per_model_fields = [
+        "dataset",
+        "train_policy",
+        "eval_policy",
+        "feature_group",
+        "classifier",
+        "seed",
+        "agent_id",
+        "precision",
+        "recall",
+        "f1",
+        "support",
+        "results_path",
+    ]
+    with per_model_csv.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=per_model_fields)
+        writer.writeheader()
+        writer.writerows(per_model_rows)
+
+    per_model_group_fields = (
+        "dataset",
+        "train_policy",
+        "eval_policy",
+        "feature_group",
+        "classifier",
+        "agent_id",
+    )
+    per_model_groups: dict[tuple, list[dict[str, Any]]] = defaultdict(list)
+    for row in per_model_rows:
+        key = tuple(row[field] for field in per_model_group_fields)
+        per_model_groups[key].append(row)
+    per_model_aggregate_rows = []
+    for key, seed_rows in sorted(per_model_groups.items()):
+        seed_rows.sort(key=lambda row: int(row["seed"]))
+        per_model_aggregate_rows.append(
+            {
+                **dict(zip(per_model_group_fields, key)),
+                "seeds": [int(row["seed"]) for row in seed_rows],
+                "n_seeds": len(seed_rows),
+                "support_per_seed": [int(row["support"]) for row in seed_rows],
+                "precision_mean": float(
+                    np.mean([row["precision"] for row in seed_rows])
+                ),
+                "precision_std": float(np.std([row["precision"] for row in seed_rows])),
+                "recall_mean": float(np.mean([row["recall"] for row in seed_rows])),
+                "recall_std": float(np.std([row["recall"] for row in seed_rows])),
+                "f1_mean": float(np.mean([row["f1"] for row in seed_rows])),
+                "f1_std": float(np.std([row["f1"] for row in seed_rows])),
+            }
+        )
+    per_model_aggregate_json = summary_root / "per_model_seed_aggregates.json"
+    per_model_aggregate_csv = summary_root / "per_model_seed_aggregates.csv"
+    per_model_aggregate_json.write_text(
+        json.dumps(per_model_aggregate_rows, indent=2) + "\n"
+    )
+    per_model_aggregate_fields = [
+        *per_model_group_fields,
+        "seeds",
+        "n_seeds",
+        "support_per_seed",
+        "precision_mean",
+        "precision_std",
+        "recall_mean",
+        "recall_std",
+        "f1_mean",
+        "f1_std",
+    ]
+    with per_model_aggregate_csv.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=per_model_aggregate_fields)
+        writer.writeheader()
+        for row in per_model_aggregate_rows:
+            writer.writerow(
+                {
+                    field: (
+                        json.dumps(row[field])
+                        if field in {"seeds", "support_per_seed"}
+                        else row[field]
+                    )
+                    for field in per_model_aggregate_fields
+                }
+            )
+
+    grouped: dict[tuple, list[dict[str, Any]]] = defaultdict(list)
+    group_fields = (
+        "dataset",
+        "train_policy",
+        "eval_policy",
+        "feature_group",
+        "classifier",
+    )
+    for row in rows:
+        grouped[tuple(row[field] for field in group_fields)].append(row)
+    aggregate_rows = []
+    bootstrap_samples = int(cfg.get("evaluation", {}).get("bootstrap_samples", 2000))
+    bootstrap_confidence = float(
+        cfg.get("evaluation", {}).get("bootstrap_confidence", 0.95)
+    )
+    for key, seed_rows in sorted(grouped.items()):
+        seed_rows.sort(key=lambda row: int(row["seed"]))
+        reference_ids = None
+        y_true = None
+        predictions_by_seed = []
+        classes = None
+        for seed_row in seed_rows:
+            result_path = Path(seed_row["results_path"])
+            result = json.loads(result_path.read_text())
+            classes = result["class_names"]
+            class_index = {name: index for index, name in enumerate(classes)}
+            prediction_rows = _read_jsonl(result_path.with_name("predictions.jsonl"))
+            episode_ids = [row["episode_id"] for row in prediction_rows]
+            true_values = np.asarray(
+                [class_index[row["true_label"]] for row in prediction_rows]
+            )
+            predicted_values = np.asarray(
+                [class_index[row["predicted_label"]] for row in prediction_rows]
+            )
+            if reference_ids is None:
+                reference_ids = episode_ids
+                y_true = true_values
+            elif episode_ids != reference_ids or not np.array_equal(
+                y_true, true_values
+            ):
+                raise RuntimeError(
+                    f"seed predictions are not aligned for aggregate {key}"
+                )
+            predictions_by_seed.append(predicted_values)
+        assert y_true is not None and classes is not None
+        aggregate_seed = int.from_bytes(
+            hashlib.sha256(_json_bytes(key)).digest()[:8], "big"
+        )
+        aggregate_bootstrap = _stratified_bootstrap_macro_f1(
+            y_true,
+            predictions_by_seed,
+            len(classes),
+            samples=bootstrap_samples,
+            confidence=bootstrap_confidence,
+            seed=aggregate_seed,
+        )
+        macro_values = [float(row["macro_f1"]) for row in seed_rows]
+        aggregate_rows.append(
+            {
+                **dict(zip(group_fields, key)),
+                "seeds": [int(row["seed"]) for row in seed_rows],
+                "n_seeds": len(seed_rows),
+                "n_test": int(seed_rows[0]["n_test"]),
+                "macro_f1_mean": float(np.mean(macro_values)),
+                "macro_f1_std": float(np.std(macro_values)),
+                "macro_f1_ci_lower": (
+                    aggregate_bootstrap["lower"] if aggregate_bootstrap else None
+                ),
+                "macro_f1_ci_upper": (
+                    aggregate_bootstrap["upper"] if aggregate_bootstrap else None
+                ),
+                "bootstrap": aggregate_bootstrap,
+            }
+        )
+    aggregate_json = summary_root / "seed_aggregates.json"
+    aggregate_csv = summary_root / "seed_aggregates.csv"
+    aggregate_json.write_text(json.dumps(aggregate_rows, indent=2) + "\n")
+    aggregate_fields = [
+        *group_fields,
+        "seeds",
+        "n_seeds",
+        "n_test",
+        "macro_f1_mean",
+        "macro_f1_std",
+        "macro_f1_ci_lower",
+        "macro_f1_ci_upper",
+    ]
+    with aggregate_csv.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=aggregate_fields)
+        writer.writeheader()
+        for row in aggregate_rows:
+            writer.writerow(
+                {
+                    field: (json.dumps(row[field]) if field == "seeds" else row[field])
+                    for field in aggregate_fields
+                }
+            )
     print(f"Summarized {len(rows)} evaluations → {csv_path}")
     return csv_path
 
@@ -1129,8 +1469,7 @@ def _harness_detector_dir(
     feature_group: str = "full",
 ) -> Path:
     return (
-        cfg["experiment"]["artifact_root"]
-        / "harness_detector"
+        _artifact_dir(cfg, "harness_detection", "harness_detector")
         / dataset
         / f"features={feature_group}"
         / f"seed={seed}"
@@ -1170,18 +1509,13 @@ def run_harness_detector_lomo(
         raise ValueError(
             "the harness detector currently supports XGBoost or RandomForest"
         )
-    detector_dir = _harness_detector_dir(
-        cfg, dataset, classifier, seed, feature_group
-    )
+    detector_dir = _harness_detector_dir(cfg, dataset, classifier, seed, feature_group)
     summary_path = detector_dir / "lomo_results.json"
     if summary_path.exists() and not force:
         print(f"[SKIP] harness detector exists: {summary_path}")
         return summary_path
 
-    split_rows = {
-        split: _harness_rows(cfg, dataset, split)
-        for split in SPLITS
-    }
+    split_rows = {split: _harness_rows(cfg, dataset, split) for split in SPLITS}
     harness_encoder = LabelEncoder().fit(list(HARNESSES))
     fold_results = []
     all_true: list[int] = []
@@ -1191,16 +1525,13 @@ def run_harness_detector_lomo(
 
     for fold_index, held_out_agent in enumerate(cfg["agents"]):
         train_rows = [
-            row for row in split_rows["train"]
-            if row["agent_id"] != held_out_agent
+            row for row in split_rows["train"] if row["agent_id"] != held_out_agent
         ]
         val_rows = [
-            row for row in split_rows["val"]
-            if row["agent_id"] != held_out_agent
+            row for row in split_rows["val"] if row["agent_id"] != held_out_agent
         ]
         test_rows = [
-            row for row in split_rows["test"]
-            if row["agent_id"] == held_out_agent
+            row for row in split_rows["test"] if row["agent_id"] == held_out_agent
         ]
         X_train, _, _, feature_names = _load_examples(
             train_rows, False, cfg, feature_group
@@ -1213,15 +1544,9 @@ def run_harness_detector_lomo(
         )
         if feature_names != val_feature_names or feature_names != test_feature_names:
             raise RuntimeError("harness-detector feature schema mismatch")
-        y_train = harness_encoder.transform(
-            [row["harness"] for row in train_rows]
-        )
-        y_val = harness_encoder.transform(
-            [row["harness"] for row in val_rows]
-        )
-        y_test = harness_encoder.transform(
-            [row["harness"] for row in test_rows]
-        )
+        y_train = harness_encoder.transform([row["harness"] for row in train_rows])
+        y_val = harness_encoder.transform([row["harness"] for row in val_rows])
+        y_test = harness_encoder.transform([row["harness"] for row in test_rows])
         if set(y_train) != {0, 1} or set(y_val) != {0, 1} or set(y_test) != {0, 1}:
             raise RuntimeError(
                 f"{held_out_agent}: each split must contain both harness labels"
@@ -1232,9 +1557,7 @@ def run_harness_detector_lomo(
         if classifier == "XGBoost":
             if XGBClassifier is None:
                 raise RuntimeError("xgboost is not installed")
-            device = xgb_device or cfg["classifiers"]["xgboost"].get(
-                "device", "cuda"
-            )
+            device = xgb_device or cfg["classifiers"]["xgboost"].get("device", "cuda")
             base = XGBClassifier(
                 tree_method="hist",
                 device=device,
@@ -1255,9 +1578,9 @@ def run_harness_detector_lomo(
                 search = RandomizedSearchCV(
                     base,
                     XGB_PARAM_DIST,
-                    n_iter=int(cfg["classifiers"]["xgboost"].get(
-                        "search_iterations", 40
-                    )),
+                    n_iter=int(
+                        cfg["classifiers"]["xgboost"].get("search_iterations", 40)
+                    ),
                     cv=3,
                     scoring="f1_macro",
                     n_jobs=1,
@@ -1268,9 +1591,7 @@ def run_harness_detector_lomo(
                 model = search.best_estimator_
                 best_params = search.best_params_
         else:
-            if quick or not cfg["classifiers"]["random_forest"].get(
-                "search", True
-            ):
+            if quick or not cfg["classifiers"]["random_forest"].get("search", True):
                 best_params = {"n_estimators": 100, "max_depth": 15}
                 model = RandomForestClassifier(
                     **best_params,
@@ -1294,9 +1615,7 @@ def run_harness_detector_lomo(
         y_test_pred = np.asarray(model.predict(X_test))
         val_probabilities = model.predict_proba(X_val)
         probabilities = (
-            model.predict_proba(X_test)
-            if hasattr(model, "predict_proba")
-            else None
+            model.predict_proba(X_test) if hasattr(model, "predict_proba") else None
         )
         fold_metrics = _classification_metrics(
             y_test, y_test_pred, list(harness_encoder.classes_)
@@ -1345,14 +1664,10 @@ def run_harness_detector_lomo(
             if probabilities is not None:
                 prediction["probabilities"] = {
                     class_name: float(probabilities[index][class_index])
-                    for class_index, class_name in enumerate(
-                        harness_encoder.classes_
-                    )
+                    for class_index, class_name in enumerate(harness_encoder.classes_)
                 }
             fold_predictions.append(prediction)
-        _write_frozen_jsonl(
-            fold_dir / "predictions.jsonl", fold_predictions, force
-        )
+        _write_frozen_jsonl(fold_dir / "predictions.jsonl", fold_predictions, force)
         fold_result = {
             "held_out_agent": held_out_agent,
             "n_train": len(train_rows),
@@ -1369,9 +1684,7 @@ def run_harness_detector_lomo(
                 y_val, val_probabilities, list(harness_encoder.classes_)
             )
         )
-        (fold_dir / "results.json").write_text(
-            json.dumps(fold_result, indent=2) + "\n"
-        )
+        (fold_dir / "results.json").write_text(json.dumps(fold_result, indent=2) + "\n")
         fold_results.append(fold_result)
         all_true.extend(int(value) for value in y_test)
         all_pred.extend(int(value) for value in y_test_pred)
@@ -1414,9 +1727,7 @@ def run_harness_detector_lomo(
         "pooled_test": pooled_metrics,
     }
     detector_dir.mkdir(parents=True, exist_ok=True)
-    _write_frozen_jsonl(
-        detector_dir / "predictions.jsonl", all_predictions, force
-    )
+    _write_frozen_jsonl(detector_dir / "predictions.jsonl", all_predictions, force)
     summary_path.write_text(json.dumps(summary, indent=2) + "\n")
     print(
         f"[HARNESS LOMO] {classifier} {dataset} "
@@ -1510,6 +1821,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
     )
     grid.add_argument("--seed", type=int, default=None)
+    grid.add_argument("--seeds", nargs="+", type=int, default=None)
     grid.add_argument("--feature-group", default="full")
     grid.add_argument("--quick", action="store_true")
     grid.add_argument("--xgb-device", choices=["cpu", "cuda"], default=None)
@@ -1522,15 +1834,14 @@ def parse_args() -> argparse.Namespace:
         default=None,
     )
     ablation.add_argument("--seed", type=int, default=None)
+    ablation.add_argument("--seeds", nargs="+", type=int, default=None)
     ablation.add_argument(
         "--feature-groups",
         nargs="+",
         default=["full", "timing_only", "non_timing"],
     )
     ablation.add_argument("--quick", action="store_true")
-    ablation.add_argument(
-        "--xgb-device", choices=["cpu", "cuda"], default=None
-    )
+    ablation.add_argument("--xgb-device", choices=["cpu", "cuda"], default=None)
     ablation.add_argument("--force", action="store_true")
     detector = subparsers.add_parser("harness-detector")
     detector.add_argument("--datasets", nargs="+", default=None)
@@ -1542,9 +1853,7 @@ def parse_args() -> argparse.Namespace:
     detector.add_argument("--seed", type=int, default=None)
     detector.add_argument("--feature-group", default="full")
     detector.add_argument("--quick", action="store_true")
-    detector.add_argument(
-        "--xgb-device", choices=["cpu", "cuda"], default=None
-    )
+    detector.add_argument("--xgb-device", choices=["cpu", "cuda"], default=None)
     detector.add_argument("--force", action="store_true")
     return parser.parse_args()
 
@@ -1592,28 +1901,30 @@ def main() -> int:
             force=args.force,
         )
     elif args.command == "run-grid":
-        run_grid(
-            cfg,
-            args.datasets or cfg["datasets"].keys(),
-            classifier,
-            seed,
-            feature_group=args.feature_group,
-            quick=args.quick,
-            xgb_device=args.xgb_device,
-            force=args.force,
-        )
-    elif args.command == "run-ablation":
-        for feature_group in args.feature_groups:
+        for grid_seed in args.seeds or [seed]:
             run_grid(
                 cfg,
                 args.datasets or cfg["datasets"].keys(),
                 classifier,
-                seed,
-                feature_group=feature_group,
+                grid_seed,
+                feature_group=args.feature_group,
                 quick=args.quick,
                 xgb_device=args.xgb_device,
                 force=args.force,
             )
+    elif args.command == "run-ablation":
+        for ablation_seed in args.seeds or [seed]:
+            for feature_group in args.feature_groups:
+                run_grid(
+                    cfg,
+                    args.datasets or cfg["datasets"].keys(),
+                    classifier,
+                    ablation_seed,
+                    feature_group=feature_group,
+                    quick=args.quick,
+                    xgb_device=args.xgb_device,
+                    force=args.force,
+                )
     elif args.command == "harness-detector":
         for dataset in args.datasets or cfg["datasets"].keys():
             run_harness_detector_lomo(

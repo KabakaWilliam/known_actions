@@ -1,0 +1,43 @@
+run:
+  sif_path: agent.multi.sif
+  trace_output_dir: traces_experiments/webshop_full_policy_normalization_4model_v1
+  episodes_per_combo: 1
+  timeout_s: 300
+  cleanup_grace_s: 30
+  browser_use_tmp_min_free_gb: 10
+  shuffle_seed: 42
+  workers: 10
+
+harnesses:
+  - browser_use
+
+agents:
+  - agent_id: qwen3_5_27b
+  - agent_id: qwen3vl_30b_a3b
+  - agent_id: gemma_4_26B_A4B_it
+  - agent_id: glm_4.6v
+
+datasets:
+  - name: webshop_train
+    source: datasets/webshop_train.json
+    n_questions: 150
+    seed: 42
+    start_url: "https://www.amazon.com"
+    task_type: shop
+    task_prompt_template: shop_normalized_policy
+
+  - name: webshop_val
+    source: datasets/webshop_val.json
+    n_questions: 75
+    seed: 42
+    start_url: "https://www.amazon.com"
+    task_type: shop
+    task_prompt_template: shop_normalized_policy
+
+  - name: webshop_test
+    source: datasets/webshop_test.json
+    n_questions: 75
+    seed: 42
+    start_url: "https://www.amazon.com"
+    task_type: shop
+    task_prompt_template: shop_normalized_policy

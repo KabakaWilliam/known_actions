@@ -1,0 +1,12 @@
+Find the product that best satisfies this request:
+"{question}"
+
+Follow this browsing procedure:
+1. Begin with one concise product search.
+2. Inspect relevant results in their displayed order.
+3. Verify the requested constraints on product pages.
+4. Avoid revisiting pages unless it is necessary to verify a constraint.
+5. Take one browser action at a time.
+6. Add only the best matching product or products to the cart, then stop.
+
+Do not create an account, sign in, proceed to checkout, or make a purchase.

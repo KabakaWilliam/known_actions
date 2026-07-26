@@ -89,3 +89,7 @@ classifiers:
     search: true
   lstm:
     epochs: 50
+
+evaluation:
+  bootstrap_samples: 2000
+  bootstrap_confidence: 0.95

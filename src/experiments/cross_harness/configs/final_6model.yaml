@@ -1,17 +1,63 @@
 experiment:
-  id: multi_harness_identity_v1
+  id: multi_harness_identity_v2
   traces_dir: ../../../traces
-  artifact_root: ../../../artifacts/classifiers/multi_harness_identity/v1
+  artifact_root: ../../../artifacts/experiments/cross_harness/main_6model_3local_3api_v2
   sampling_seed: 42
   classifier_seed: 42
 
+artifact_layout:
+  frozen_manifests: frozen_task_splits
+  model_identity: model_identity
+  identity_summaries: model_identity_summaries
+  harness_detection: harness_detection_lomo
+
 agents:
-  - qwen3vl_30b_a3b
   - qwen3_5_27b
   - glm_4.6v
+  - gemma_4_26B_A4B_it
   - gpt_5_4
   - gemini_3_1
   - claude_opus_4_6
+
+# Canonical frozen roster for the main experiment. Inventory scans reject a
+# trace whose metadata model name does not match the aliases listed for its
+# agent_id. Provider-qualified aliases differ between the historical MidScene
+# traces and the OpenRouter browser-use traces but identify the same model.
+model_roster:
+  qwen3_5_27b:
+    canonical_model: Qwen/Qwen3.5-27B
+    source: open_weight
+    trace_aliases:
+      - Qwen/Qwen3.5-27B
+  glm_4.6v:
+    canonical_model: zai-org/GLM-4.6V
+    source: open_weight
+    trace_aliases:
+      - glm-4.6v
+      - zai-org/GLM-4.6V
+  gemma_4_26B_A4B_it:
+    canonical_model: google/gemma-4-26B-A4B-it
+    source: open_weight
+    trace_aliases:
+      - google/gemma-4-26B-A4B-it
+  gpt_5_4:
+    canonical_model: GPT-5.4
+    source: api
+    trace_aliases:
+      - gpt-5.4
+      - openai/gpt-5.4
+  gemini_3_1:
+    canonical_model: Gemini 3.1 Pro Preview
+    source: api
+    trace_aliases:
+      - gemini-3.1-pro-preview
+      - google/gemini-3.1-pro-preview
+  claude_opus_4_6:
+    canonical_model: Claude Opus 4.6
+    source: api
+    trace_aliases:
+      - claude-opus-4-6
+      - anthropic/claude-opus-4.6
 
 datasets:
   2wikimultihop:
@@ -85,3 +131,7 @@ classifiers:
     search: true
   lstm:
     epochs: 50
+
+evaluation:
+  bootstrap_samples: 2000
+  bootstrap_confidence: 0.95

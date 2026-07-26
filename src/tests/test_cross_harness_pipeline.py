@@ -8,11 +8,13 @@ import yaml
 from cross_harness_pipeline import (
     TIMING_FEATURES,
     XGBClassifier,
+    _artifact_dir,
     _coverage,
     _load_examples,
     _manifest_rows,
     _manifest_path,
     _mixed_assignment,
+    _model_identity_error,
     _read_jsonl,
     _selected_record_index,
     evaluate_model,
@@ -31,9 +33,7 @@ class CrossHarnessManifestTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.traces = self.root / "traces"
         self.agents = ["agent_a", "agent_b"]
-        self.datasets = {"wiki": {"expected_tasks": {
-            "train": 4, "val": 4, "test": 4
-        }}}
+        self.datasets = {"wiki": {"expected_tasks": {"train": 4, "val": 4, "test": 4}}}
         config = {
             "experiment": {
                 "id": "test",
@@ -51,6 +51,10 @@ class CrossHarnessManifestTests(unittest.TestCase):
                 "random_forest": {"search": False},
                 "xgboost": {"device": "cpu", "search_iterations": 1},
                 "lstm": {"epochs": 1},
+            },
+            "evaluation": {
+                "bootstrap_samples": 50,
+                "bootstrap_confidence": 0.95,
             },
         }
         self.config_path = self.root / "config.yaml"
@@ -75,9 +79,7 @@ class CrossHarnessManifestTests(unittest.TestCase):
                 "question": f"question {split} {task_index}",
                 "timestamp": f"2026-01-01T00:00:{task_index:02d}Z",
             },
-            "dom_trace": {
-                "events": [{"type": "click", "t_episode": task_index + 1}]
-            },
+            "dom_trace": {"events": [{"type": "click", "t_episode": task_index + 1}]},
             "verification": {"correct": task_index % 2 == 0},
             "error": None,
         }
@@ -90,12 +92,8 @@ class CrossHarnessManifestTests(unittest.TestCase):
         for agent in self.agents:
             for split in ("train", "val", "test"):
                 for task_index in range(4):
-                    self._write_trace(
-                        agent, split, "midscene", task_index, legacy=True
-                    )
-                    self._write_trace(
-                        agent, split, "browser_use", task_index
-                    )
+                    self._write_trace(agent, split, "midscene", task_index, legacy=True)
+                    self._write_trace(agent, split, "browser_use", task_index)
 
     def test_legacy_midscene_and_browser_use_are_distinct(self):
         self._populate()
@@ -103,11 +101,50 @@ class CrossHarnessManifestTests(unittest.TestCase):
         harness_counts = {}
         for harness in ("midscene", "browser_use"):
             harness_counts[harness] = sum(
-                record.valid_trace and record.harness == harness
-                for record in records
+                record.valid_trace and record.harness == harness for record in records
             )
         self.assertEqual(harness_counts["midscene"], 24)
         self.assertEqual(harness_counts["browser_use"], 24)
+
+    def test_model_roster_rejects_wrong_trace_identity(self):
+        cfg = {
+            "model_roster": {"agent_a": {"trace_aliases": ["provider/canonical-model"]}}
+        }
+        self.assertIsNone(
+            _model_identity_error(
+                cfg,
+                "agent_a",
+                {
+                    "agent_id": "agent_a",
+                    "model_name": "provider/canonical-model",
+                },
+            )
+        )
+        self.assertIn(
+            "model mismatch",
+            _model_identity_error(
+                cfg,
+                "agent_a",
+                {
+                    "agent_id": "agent_a",
+                    "model_name": "provider/different-model",
+                },
+            ),
+        )
+
+    def test_named_artifact_layout_preserves_legacy_default(self):
+        self.assertEqual(
+            _artifact_dir(self.cfg, "model_identity", "models"),
+            self.root / "artifacts" / "models",
+        )
+        self.cfg["artifact_layout"] = {"model_identity": "model_identity"}
+        self.assertEqual(
+            _artifact_dir(self.cfg, "model_identity", "models"),
+            self.root / "artifacts" / "model_identity",
+        )
+        self.cfg["artifact_layout"] = {"model_identity": "../outside"}
+        with self.assertRaises(ValueError):
+            _artifact_dir(self.cfg, "model_identity", "models")
 
     def test_common_task_universe_and_mixed_balance(self):
         self._populate()
@@ -116,20 +153,14 @@ class CrossHarnessManifestTests(unittest.TestCase):
         self.assertEqual(len(coverage["common_task_ids"]["wiki"]["train"]), 4)
         selected = _selected_record_index(records)
         task_ids = coverage["common_task_ids"]["wiki"]["train"]
-        rows = _manifest_rows(
-            self.cfg, selected, "wiki", "train", "mixed50", task_ids
-        )
+        rows = _manifest_rows(self.cfg, selected, "wiki", "train", "mixed50", task_ids)
         harnesses_by_task = {}
         for row in rows:
             harnesses_by_task.setdefault(row["task_id"], set()).add(row["harness"])
         self.assertTrue(all(len(value) == 1 for value in harnesses_by_task.values()))
         assignment = _mixed_assignment(task_ids, 42)
-        self.assertEqual(
-            list(assignment.values()).count("midscene"), 2
-        )
-        self.assertEqual(
-            list(assignment.values()).count("browser_use"), 2
-        )
+        self.assertEqual(list(assignment.values()).count("midscene"), 2)
+        self.assertEqual(list(assignment.values()).count("browser_use"), 2)
 
     def test_prepare_train_and_cross_harness_evaluate_on_cpu(self):
         self._populate()
@@ -155,26 +186,47 @@ class CrossHarnessManifestTests(unittest.TestCase):
         result = json.loads(result_path.read_text())
         self.assertEqual(result["n_test"], 8)
         self.assertEqual(result["class_names"], self.agents)
+        self.assertIn("macro_f1_bootstrap", result["metrics"])
         summary = summarize_results(self.cfg)
         self.assertIn(
             "midscene,browser_use,full,RandomForest",
             summary.read_text(),
         )
+        aggregate = json.loads(
+            (
+                self.cfg["experiment"]["artifact_root"]
+                / "summaries"
+                / "seed_aggregates.json"
+            ).read_text()
+        )
+        self.assertEqual(aggregate[0]["n_seeds"], 1)
+        self.assertIn("macro_f1_ci_lower", aggregate[0])
+        summary_root = self.cfg["experiment"]["artifact_root"] / "summaries"
+        per_model_rows = json.loads(
+            (summary_root / "per_model_metrics.json").read_text()
+        )
+        self.assertEqual(
+            {row["agent_id"] for row in per_model_rows},
+            set(self.agents),
+        )
+        self.assertTrue(all("f1" in row and "support" in row for row in per_model_rows))
+        per_model_aggregate = json.loads(
+            (summary_root / "per_model_seed_aggregates.json").read_text()
+        )
+        self.assertEqual(
+            {row["agent_id"] for row in per_model_aggregate},
+            set(self.agents),
+        )
+        self.assertTrue(all(row["n_seeds"] == 1 for row in per_model_aggregate))
 
     def test_feature_groups_partition_full_schema_without_touching_traces(self):
         self._populate()
         records = scan_inventory(self.cfg)
         prepare_manifests(self.cfg, records)
-        rows = _read_jsonl(
-            _manifest_path(self.cfg, "wiki", "train", "midscene")
-        )
+        rows = _read_jsonl(_manifest_path(self.cfg, "wiki", "train", "midscene"))
         _, _, _, full = _load_examples(rows, False, self.cfg, "full")
-        _, _, _, timing = _load_examples(
-            rows, False, self.cfg, "timing_only"
-        )
-        _, _, _, non_timing = _load_examples(
-            rows, False, self.cfg, "non_timing"
-        )
+        _, _, _, timing = _load_examples(rows, False, self.cfg, "timing_only")
+        _, _, _, non_timing = _load_examples(rows, False, self.cfg, "non_timing")
         self.assertEqual(set(timing), set(TIMING_FEATURES))
         self.assertFalse(set(timing) & set(non_timing))
         self.assertEqual(set(full), set(timing) | set(non_timing))
@@ -204,6 +256,33 @@ class CrossHarnessManifestTests(unittest.TestCase):
         result = json.loads(result_path.read_text())
         self.assertEqual(result["classifier"], "XGBoost")
         self.assertEqual(result["n_test"], 8)
+        train_model(
+            self.cfg,
+            "wiki",
+            "browser_use",
+            "XGBoost",
+            8,
+            quick=True,
+            xgb_device="cpu",
+        )
+        evaluate_model(
+            self.cfg,
+            "wiki",
+            "browser_use",
+            "midscene",
+            "XGBoost",
+            8,
+        )
+        summarize_results(self.cfg)
+        aggregate = json.loads(
+            (
+                self.cfg["experiment"]["artifact_root"]
+                / "summaries"
+                / "seed_aggregates.json"
+            ).read_text()
+        )
+        self.assertEqual(aggregate[0]["n_seeds"], 2)
+        self.assertEqual(aggregate[0]["seeds"], [7, 8])
 
     def test_lstm_quick_path_stays_on_cpu(self):
         self._populate()
@@ -227,6 +306,7 @@ class CrossHarnessManifestTests(unittest.TestCase):
         )
         with (model_dir / "model.pkl").open("rb") as handle:
             import pickle
+
             bundle = pickle.load(handle)
         self.assertEqual(bundle["lstm_device"], "cpu")
         self.assertEqual(json.loads(result_path.read_text())["n_test"], 8)
@@ -253,9 +333,7 @@ class CrossHarnessManifestTests(unittest.TestCase):
         )
         self.assertTrue(all(fold["n_test"] == 8 for fold in result["folds"]))
         self.assertIn("fold_auroc_mean", result)
-        self.assertTrue(
-            all("auroc" in fold["test"] for fold in result["folds"])
-        )
+        self.assertTrue(all("auroc" in fold["test"] for fold in result["folds"]))
 
 
 if __name__ == "__main__":

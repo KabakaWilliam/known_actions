@@ -1,0 +1,24 @@
+run:
+  sif_path: agent.multi.sif
+  trace_output_dir: traces_experiments/inference_engine_webshop_sglang_full_v1
+  episodes_per_combo: 1
+  timeout_s: 300
+  cleanup_grace_s: 30
+  browser_use_tmp_min_free_gb: 10
+  shuffle_seed: 42
+  workers: 10
+
+harnesses:
+  - browser_use
+
+agents:
+  - agent_id: qwen3vl_30b_a3b
+
+datasets:
+  - name: webshop_test
+    source: datasets/webshop_test.json
+    hf_dataset: webshop_goals
+    n_questions: 75
+    seed: 42
+    start_url: "https://www.amazon.com"
+    task_type: shop

@@ -1,0 +1,26 @@
+run:
+  sif_path: agent.multi.sif
+  trace_output_dir: traces_experiments/inference_engine_webshop_sglang_smoke_v1
+  episodes_per_combo: 1
+  timeout_s: 300
+  cleanup_grace_s: 30
+  browser_use_tmp_min_free_gb: 10
+  shuffle_seed: 42
+  workers: 2
+
+harnesses:
+  - browser_use
+
+agents:
+  - agent_id: glm_4.6v
+  - agent_id: qwen3_5_27b
+  - agent_id: gemma_4_26B_A4B_it
+  - agent_id: qwen3vl_30b_a3b
+
+datasets:
+  - name: webshop_sglang_smoke
+    source: datasets/webshop_test.json
+    n_questions: 2
+    seed: 42
+    start_url: "https://www.amazon.com"
+    task_type: shop

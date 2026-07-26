@@ -1,14 +1,18 @@
 .nfs*
 .claude
 playwright-sandbox
+TODO
 
 results_v1
 src/web_shop_goals.json
 src/datasets
 src/logos
 src/traces
+src/traces_experiments/
+src/traces_sglang/
 src/*.sif
 .apptainer/
+.conda-runtime/
 src/__pycache__
 **__pycache__**
 *.env
