@@ -25,6 +25,21 @@ working-directory assumptions mid-campaign.
 - `train_delayed_classifier.sh`: timing-jitter defense.
 - `experiments/cross_harness/`: canonical two-harness identity, harness
   detection, and timing/non-timing ablations.
+- `scripts/run_experiments_simple.sh`: preferred human-readable launcher. Set
+  GPU numbers in its SETTINGS block, then comment/uncomment named experiments;
+  every selection is documented with its train/test protocol and purpose.
+- `scripts/run_experiment_queue.sh`: commentable, two-GPU queue for the final
+  six-model XGBoost grid/ablations/harness detector and the four-model
+  policy-normalization analysis. It excludes incomplete SGLang analysis.
+  Select one family without editing using `EXPERIMENT_QUEUE=cross` or
+  `EXPERIMENT_QUEUE=policy`; use `SKIP_PREPARE=1` only after a successful
+  preparation pass.
+- `scripts/run_followup_experiments.sh`: commentable launcher for the
+  14-model MidScene model-arrival update curve and the matched vLLM↔SGLang
+  WebShop grid. Each selection explains the reviewer question it answers.
+- `scripts/run_temporal_generalization.sh`: commentable launcher for the
+  test-only MidScene future-wave collection and frozen old-to-new WebShop
+  temporal-generalization analysis.
 
 ## Analysis and publication
 

@@ -47,4 +47,24 @@ experiments:
     artifact_root: artifacts/experiments/inference_engine/webshop_sglang_full_v1
     supplemental_model: qwen3vl_30b_a3b
     supplemental_config: experiments/inference_engine/configs/webshop_sglang_qwen3vl_supplemental_campaign.yaml
-    status: ready_for_eight_episode_smoke
+    analysis_config: experiments/inference_engine/configs/webshop_sglang_analysis.yaml
+    analysis_entrypoint: experiments.inference_engine.pipeline
+    status: collection_complete_analysis_prepared
+  midscene_model_arrival_update:
+    question: How many labeled traces are needed to add a newly released model to the closed-set classifier?
+    entrypoint: experiments.model_arrival.pipeline
+    config: experiments/model_arrival/configs/midscene_14model.yaml
+    datasets: [2wikimultihop, webshop]
+    n_models: 14
+    budgets: [1, 2, 5, 10, 20, 50, 100, all]
+    classifier_seeds: [40, 41, 42, 43, 44]
+    status: prepared_and_smoke_tested
+  midscene_future_wave_temporal_generalization:
+    question: Does an original-wave MidScene classifier retain model identity on a genuinely later matched test wave?
+    entrypoint: experiments.temporal_generalization.pipeline
+    collection_config: experiments/temporal_generalization/configs/webshop_future_midscene_campaign.yaml
+    analysis_config: experiments/temporal_generalization/configs/webshop_future_midscene_analysis.yaml
+    datasets: [webshop]
+    models: [qwen3_5_27b, glm_4.6v, gemma_4_26B_A4B_it, gemini_3_1]
+    classifier_seeds: [40, 41, 42, 43, 44]
+    status: ready_for_collection

@@ -28,6 +28,7 @@ from experiments.cross_harness.pipeline import (
     summarize_results,
     train_model,
 )
+from experiments.reporting import markdown_table, number, read_csv, relative_link
 
 
 CONDITIONS = ("canonical", "normalized_policy")
@@ -36,6 +37,15 @@ GRID = {
     "normalized_policy": ("normalized_policy",),
     "mixed50": ("canonical", "normalized_policy"),
 }
+
+
+def _task_success(episode: dict[str, Any]) -> bool | None:
+    """Read task completion from current traces, with legacy compatibility."""
+    value = episode.get("task_success")
+    if isinstance(value, bool):
+        return value
+    value = (episode.get("verification") or {}).get("correct")
+    return value if isinstance(value, bool) else None
 
 
 def _resolve(config_path: Path, value: str) -> Path:
@@ -99,9 +109,7 @@ def _latest_valid_records(cfg: dict[str, Any]) -> dict[tuple, dict[str, Any]]:
                             "harness": condition_name,
                             "trace_path": str(path.resolve()),
                             "collection_run_id": path.parent.name,
-                            "task_success": (episode.get("verification") or {}).get(
-                                "correct"
-                            ),
+                            "task_success": _task_success(episode),
                             "_order": (timestamp, path.stat().st_mtime_ns),
                         }
                         previous = selected.get(key)
@@ -303,6 +311,220 @@ def summarize_task_success(cfg: dict[str, Any]) -> Path:
     return csv_path
 
 
+def write_human_report(cfg: dict[str, Any]) -> Path:
+    """Write a self-contained guide to the policy experiment and its results."""
+    artifact_root: Path = cfg["experiment"]["artifact_root"]
+    summary_root = artifact_root / "summaries"
+    report_path = artifact_root / "REPORT.md"
+    aggregate_rows = read_csv(summary_root / "seed_aggregates.csv")
+    per_model_rows = read_csv(summary_root / "per_model_seed_aggregates.csv")
+    utility_rows = read_csv(summary_root / "task_success.csv")
+
+    comparison_order = [
+        ("canonical", "canonical"),
+        ("canonical", "normalized_policy"),
+        ("normalized_policy", "normalized_policy"),
+        ("mixed50", "canonical"),
+        ("mixed50", "normalized_policy"),
+    ]
+    comparison_labels = {
+        ("canonical", "canonical"): "Baseline / canonical control",
+        ("canonical", "normalized_policy"): "Fixed attacker under defense",
+        ("normalized_policy", "normalized_policy"): "Defense-aware attacker",
+        ("mixed50", "canonical"): "Mixed attacker → canonical",
+        ("mixed50", "normalized_policy"): "Mixed attacker → normalized",
+    }
+    by_comparison = {
+        (row["train_policy"], row["eval_policy"], row["feature_group"]): row
+        for row in aggregate_rows
+    }
+
+    full_rows = []
+    for train_policy, eval_policy in comparison_order:
+        row = by_comparison.get((train_policy, eval_policy, "full"))
+        if not row:
+            continue
+        seed_sd = (
+            number(row["macro_f1_std"]) if int(row["n_seeds"]) >= 2 else "—"
+        )
+        full_rows.append(
+            [
+                comparison_labels[(train_policy, eval_policy)],
+                f"`{train_policy} → {eval_policy}`",
+                row["n_seeds"],
+                number(row["macro_f1_mean"]),
+                seed_sd,
+                (
+                    f"[{number(row['macro_f1_ci_lower'])}, "
+                    f"{number(row['macro_f1_ci_upper'])}]"
+                ),
+            ]
+        )
+
+    ablation_rows = []
+    for feature_group in ("timing_only", "non_timing"):
+        for train_policy, eval_policy in comparison_order:
+            row = by_comparison.get((train_policy, eval_policy, feature_group))
+            if not row:
+                continue
+            ablation_rows.append(
+                [
+                    feature_group,
+                    comparison_labels[(train_policy, eval_policy)],
+                    row["n_seeds"],
+                    number(row["macro_f1_mean"]),
+                    (
+                        f"[{number(row['macro_f1_ci_lower'])}, "
+                        f"{number(row['macro_f1_ci_upper'])}]"
+                    ),
+                ]
+            )
+
+    fixed_per_model = [
+        row
+        for row in per_model_rows
+        if row["train_policy"] == "canonical"
+        and row["eval_policy"] == "normalized_policy"
+        and row["feature_group"] == "full"
+    ]
+    per_model_table = [
+        [
+            row["agent_id"],
+            row["n_seeds"],
+            f"{number(row['f1_mean'])} ± {number(row['f1_std'])}",
+            number(row["recall_mean"]),
+        ]
+        for row in sorted(fixed_per_model, key=lambda item: item["agent_id"])
+    ]
+
+    utility_table = []
+    for row in utility_rows:
+        if row["split"] != "test" or row["agent_id"] != "ALL":
+            continue
+        utility_table.append(
+            [
+                row["condition"],
+                f"{row['n_success']}/{row['n_labeled']}",
+                number(row["success_rate"]),
+                (
+                    f"[{number(row['success_ci_lower'])}, "
+                    f"{number(row['success_ci_upper'])}]"
+                ),
+            ]
+        )
+
+    observations = []
+    baseline = by_comparison.get(("canonical", "canonical", "full"))
+    fixed = by_comparison.get(("canonical", "normalized_policy", "full"))
+    aware = by_comparison.get(
+        ("normalized_policy", "normalized_policy", "full")
+    )
+    if baseline and fixed:
+        drop = float(baseline["macro_f1_mean"]) - float(fixed["macro_f1_mean"])
+        observations.append(
+            f"- Fixed-attacker macro-F1 drops by **{drop:.3f}** under the "
+            "normalized policy."
+        )
+    if fixed and aware:
+        recovery = float(aware["macro_f1_mean"]) - float(fixed["macro_f1_mean"])
+        observations.append(
+            f"- Defense-aware retraining recovers **{recovery:.3f}** macro-F1."
+        )
+    observations.append(
+        "- Treat task success as an agent-reported completion proxy gated on "
+        "browser activity, not authoritative WebShop reward."
+    )
+
+    lines = [
+        "# Experiment report: WebShop behavioral-policy normalization",
+        "",
+        f"Experiment ID: `{cfg['experiment']['id']}`",
+        "",
+        "## What this experiment tests",
+        "",
+        "This is a four-class **model-identification** experiment over one "
+        "browser-use harness and two execution policies. It asks whether a "
+        "classifier trained on canonical traces survives a normalized action "
+        "policy, and whether an attacker can recover by retraining.",
+        "",
+        "- `canonical`: original browser-use traces.",
+        "- `normalized_policy`: newly collected traces under the fixed "
+        "normalized behavioral policy.",
+        "- `mixed50`: a balanced training construction using different tasks "
+        "from both conditions; it is not a third collection condition.",
+        "- `A → B`: train/validate on policy A, then evaluate once on policy B.",
+        "",
+        "## Headline full-feature results",
+        "",
+        "Macro-F1 is the unweighted mean of the four per-model F1 scores. "
+        "Seed SD is the sample standard deviation (`ddof=1`) across classifier "
+        "seeds and is undefined for one seed. The interval is a 95% stratified "
+        "bootstrap over test traces after averaging seed scores.",
+        "",
+        markdown_table(
+            [
+                "Scientific comparison",
+                "Train → test",
+                "Seeds",
+                "Macro-F1 mean",
+                "Seed SD",
+                "95% trace-bootstrap CI",
+            ],
+            full_rows,
+        ),
+        "",
+        "## Direct reading",
+        "",
+        *observations,
+        "",
+        "## Feature ablations",
+        "",
+        "These rows are currently seed 42 only unless `Seeds` says otherwise. "
+        "Do not describe their intervals as multi-seed uncertainty.",
+        "",
+        markdown_table(
+            ["Feature view", "Comparison", "Seeds", "Macro-F1", "95% trace CI"],
+            ablation_rows,
+        ),
+        "",
+        "## Fixed-attacker result by model",
+        "",
+        "This isolates `canonical → normalized_policy` with full features.",
+        "",
+        markdown_table(
+            ["Model", "Seeds", "F1 mean ± seed SD", "Recall mean"],
+            per_model_table,
+        ),
+        "",
+        "## Task-completion proxy on the test split",
+        "",
+        markdown_table(
+            ["Condition", "Completed", "Rate", "95% Wilson CI"], utility_table
+        ),
+        "",
+        "## Artifact map",
+        "",
+        f"- One row per classifier seed: "
+        f"{relative_link(summary_root / 'results.csv', report_path)}",
+        f"- Seed-aggregated headline metrics: "
+        f"{relative_link(summary_root / 'seed_aggregates.csv', report_path)}",
+        f"- One row per model and seed: "
+        f"{relative_link(summary_root / 'per_model_metrics.csv', report_path)}",
+        f"- Per-model seed aggregates: "
+        f"{relative_link(summary_root / 'per_model_seed_aggregates.csv', report_path)}",
+        f"- Utility proxy: "
+        f"{relative_link(summary_root / 'task_success.csv', report_path)}",
+        "- Trained models and individual evaluations: `models/`.",
+        "- Frozen matched-task manifests: `splits/`.",
+        "",
+        "This file is regenerated by the policy pipeline's `summarize` command.",
+        "",
+    ]
+    report_path.write_text("\n".join(lines))
+    print(f"Wrote human-readable report → {report_path}")
+    return report_path
+
+
 def run_condition_grid(
     cfg: dict[str, Any],
     *,
@@ -340,6 +562,7 @@ def run_condition_grid(
                         )
     summarize_results(cfg)
     summarize_task_success(cfg)
+    write_human_report(cfg)
 
 
 def parse_args() -> argparse.Namespace:
@@ -390,6 +613,7 @@ def main() -> int:
     elif args.command == "summarize":
         summarize_results(cfg)
         summarize_task_success(cfg)
+        write_human_report(cfg)
     return 0
 
 

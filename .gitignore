@@ -13,6 +13,7 @@ src/traces_sglang/
 src/*.sif
 .apptainer/
 .conda-runtime/
+.tmp/
 src/__pycache__
 **__pycache__**
 *.env

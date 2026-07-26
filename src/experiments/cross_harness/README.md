@@ -106,3 +106,9 @@ python -m experiments.cross_harness.pipeline harness-detector \
 Use `--config experiments/cross_harness/configs/provisional_5model.yaml` for
 the isolated provisional experiment. The old `cross_harness_pipeline.py`
 entry point remains as a compatibility shim.
+
+Every grid, ablation, harness-detector, and `summarize` invocation regenerates
+the artifact root's `REPORT.md`. Start there rather than navigating model
+directories directly. It keeps six-class model identification separate from
+binary LOMO harness identification and marks unfinished dataset/feature-view
+harness runs as partial instead of silently omitting them.

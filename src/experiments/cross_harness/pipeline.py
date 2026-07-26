@@ -31,6 +31,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 
+from experiments.reporting import markdown_table, number, read_csv, relative_link
 from trace_analyzer import (
     AgentLSTM,
     EVENT_VOCAB,
@@ -655,6 +656,12 @@ def _classification_metrics(
         "weighted_f1": float(report["weighted avg"]["f1-score"]),
         "classification_report": report,
     }
+
+
+def _sample_std(values: Iterable[float]) -> float | None:
+    """Sample SD across repeated classifier seeds; undefined for one seed."""
+    values = list(values)
+    return float(np.std(values, ddof=1)) if len(values) >= 2 else None
 
 
 def _binary_ranking_metrics(
@@ -1321,11 +1328,13 @@ def summarize_results(cfg: dict[str, Any]) -> Path:
                 "precision_mean": float(
                     np.mean([row["precision"] for row in seed_rows])
                 ),
-                "precision_std": float(np.std([row["precision"] for row in seed_rows])),
+                "precision_std": _sample_std(
+                    row["precision"] for row in seed_rows
+                ),
                 "recall_mean": float(np.mean([row["recall"] for row in seed_rows])),
-                "recall_std": float(np.std([row["recall"] for row in seed_rows])),
+                "recall_std": _sample_std(row["recall"] for row in seed_rows),
                 "f1_mean": float(np.mean([row["f1"] for row in seed_rows])),
-                "f1_std": float(np.std([row["f1"] for row in seed_rows])),
+                "f1_std": _sample_std(row["f1"] for row in seed_rows),
             }
         )
     per_model_aggregate_json = summary_root / "per_model_seed_aggregates.json"
@@ -1424,7 +1433,7 @@ def summarize_results(cfg: dict[str, Any]) -> Path:
                 "n_seeds": len(seed_rows),
                 "n_test": int(seed_rows[0]["n_test"]),
                 "macro_f1_mean": float(np.mean(macro_values)),
-                "macro_f1_std": float(np.std(macro_values)),
+                "macro_f1_std": _sample_std(macro_values),
                 "macro_f1_ci_lower": (
                     aggregate_bootstrap["lower"] if aggregate_bootstrap else None
                 ),
@@ -1459,6 +1468,396 @@ def summarize_results(cfg: dict[str, Any]) -> Path:
             )
     print(f"Summarized {len(rows)} evaluations → {csv_path}")
     return csv_path
+
+
+def write_human_report(cfg: dict[str, Any]) -> Path:
+    """Write a human-readable index of identity and harness results."""
+    artifact_root: Path = cfg["experiment"]["artifact_root"]
+    summary_root = _artifact_dir(cfg, "identity_summaries", "summaries")
+    detector_root = _artifact_dir(
+        cfg, "harness_detection", "harness_detection_lomo"
+    )
+    report_path = artifact_root / "REPORT.md"
+    aggregate_rows = read_csv(summary_root / "seed_aggregates.csv")
+
+    comparison_order = [
+        ("midscene", "midscene"),
+        ("midscene", "browser_use"),
+        ("browser_use", "browser_use"),
+        ("browser_use", "midscene"),
+        ("mixed50", "midscene"),
+        ("mixed50", "browser_use"),
+        ("mixed50", "mixed50"),
+    ]
+    comparison_labels = {
+        ("midscene", "midscene"): "Within MidScene",
+        ("midscene", "browser_use"): "MidScene → browser-use",
+        ("browser_use", "browser_use"): "Within browser-use",
+        ("browser_use", "midscene"): "browser-use → MidScene",
+        ("mixed50", "midscene"): "Mixed training → MidScene",
+        ("mixed50", "browser_use"): "Mixed training → browser-use",
+        ("mixed50", "mixed50"): "Mixed training → mixed test",
+    }
+    identity_index = {
+        (
+            row["dataset"],
+            row["train_policy"],
+            row["eval_policy"],
+            row["feature_group"],
+        ): row
+        for row in aggregate_rows
+    }
+
+    full_tables = []
+    for dataset in cfg["datasets"]:
+        rows = []
+        for train_policy, eval_policy in comparison_order:
+            result = identity_index.get(
+                (dataset, train_policy, eval_policy, "full")
+            )
+            if not result:
+                continue
+            seed_sd = (
+                number(result["macro_f1_std"])
+                if int(result["n_seeds"]) >= 2
+                else "—"
+            )
+            rows.append(
+                [
+                    comparison_labels[(train_policy, eval_policy)],
+                    result["n_seeds"],
+                    number(result["macro_f1_mean"]),
+                    seed_sd,
+                    (
+                        f"[{number(result['macro_f1_ci_lower'])}, "
+                        f"{number(result['macro_f1_ci_upper'])}]"
+                    ),
+                ]
+            )
+        full_tables.extend(
+            [
+                f"### {dataset}",
+                "",
+                markdown_table(
+                    [
+                        "Train → test comparison",
+                        "Seeds",
+                        "Macro-F1 mean",
+                        "Seed SD",
+                        "95% trace-bootstrap CI",
+                    ],
+                    rows,
+                ),
+                "",
+            ]
+        )
+
+    ablation_tables = []
+    for dataset in cfg["datasets"]:
+        rows = []
+        for feature_group in ("timing_only", "non_timing"):
+            for train_policy, eval_policy in comparison_order:
+                result = identity_index.get(
+                    (dataset, train_policy, eval_policy, feature_group)
+                )
+                if not result:
+                    continue
+                rows.append(
+                    [
+                        feature_group,
+                        comparison_labels[(train_policy, eval_policy)],
+                        result["n_seeds"],
+                        number(result["macro_f1_mean"]),
+                    ]
+                )
+        ablation_tables.extend(
+            [
+                f"### {dataset}",
+                "",
+                (
+                    markdown_table(
+                        ["Feature view", "Comparison", "Seeds", "Macro-F1"],
+                        rows,
+                    )
+                    if rows
+                    else "_No ablation results have completed._"
+                ),
+                "",
+            ]
+        )
+
+    detector_rows = []
+    detector_summary_rows = []
+    detector_fold_rows = []
+    expected_detector_runs = 0
+    completed_detector_runs = 0
+    for dataset in cfg["datasets"]:
+        for feature_group in ("full", "timing_only", "non_timing"):
+            expected_detector_runs += 1
+            candidates = sorted(
+                (
+                    detector_root
+                    / dataset
+                    / f"features={feature_group}"
+                ).glob("seed=*/XGBoost/lomo_results.json")
+            )
+            if candidates:
+                completed_detector_runs += 1
+                result = json.loads(candidates[-1].read_text())
+                fold_aurocs = [
+                    float(fold["test"]["auroc"]) for fold in result["folds"]
+                ]
+                fold_macro_f1s = [
+                    float(fold["test"]["macro_f1"]) for fold in result["folds"]
+                ]
+                detector_summary_rows.append(
+                    {
+                        "dataset": dataset,
+                        "feature_group": feature_group,
+                        "classifier": result["classifier"],
+                        "seed": result["seed"],
+                        "n_folds": len(result["folds"]),
+                        "mean_fold_macro_f1": float(np.mean(fold_macro_f1s)),
+                        "fold_macro_f1_sample_sd": _sample_std(fold_macro_f1s),
+                        "mean_fold_auroc": float(np.mean(fold_aurocs)),
+                        "fold_auroc_sample_sd": _sample_std(fold_aurocs),
+                        "pooled_macro_f1": result["pooled_test"]["macro_f1"],
+                        "pooled_auroc": result["pooled_test"]["auroc"],
+                        "results_path": str(candidates[-1]),
+                    }
+                )
+                for fold in result["folds"]:
+                    detector_fold_rows.append(
+                        {
+                            "dataset": dataset,
+                            "feature_group": feature_group,
+                            "classifier": result["classifier"],
+                            "seed": result["seed"],
+                            "held_out_agent": fold["held_out_agent"],
+                            "n_train": fold["n_train"],
+                            "n_val": fold["n_val"],
+                            "n_test": fold["n_test"],
+                            "macro_f1": fold["test"]["macro_f1"],
+                            "auroc": fold["test"]["auroc"],
+                        }
+                    )
+                detector_rows.append(
+                    [
+                        dataset,
+                        feature_group,
+                        result["seed"],
+                        "complete",
+                        number(np.mean(fold_macro_f1s)),
+                        number(_sample_std(fold_macro_f1s)),
+                        number(np.mean(fold_aurocs)),
+                        number(_sample_std(fold_aurocs)),
+                        number(result["pooled_test"]["macro_f1"]),
+                    ]
+                )
+
+            else:
+                partial_folds = len(
+                    list(
+                        (
+                            detector_root
+                            / dataset
+                            / f"features={feature_group}"
+                        ).glob("seed=*/XGBoost/held_out=*/results.json")
+                    )
+                )
+                status = (
+                    f"partial ({partial_folds}/{len(cfg['agents'])} folds)"
+                    if partial_folds
+                    else "not run"
+                )
+                detector_rows.append(
+                    [
+                        dataset,
+                        feature_group,
+                        "—",
+                        status,
+                        "—",
+                        "—",
+                        "—",
+                        "—",
+                        "—",
+                    ]
+                )
+
+    detector_root.mkdir(parents=True, exist_ok=True)
+    detector_summary_csv = detector_root / "summary.csv"
+    detector_fold_csv = detector_root / "fold_results.csv"
+    summary_fields = [
+        "dataset",
+        "feature_group",
+        "classifier",
+        "seed",
+        "n_folds",
+        "mean_fold_macro_f1",
+        "fold_macro_f1_sample_sd",
+        "mean_fold_auroc",
+        "fold_auroc_sample_sd",
+        "pooled_macro_f1",
+        "pooled_auroc",
+        "results_path",
+    ]
+    with detector_summary_csv.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=summary_fields)
+        writer.writeheader()
+        writer.writerows(detector_summary_rows)
+    fold_fields = [
+        "dataset",
+        "feature_group",
+        "classifier",
+        "seed",
+        "held_out_agent",
+        "n_train",
+        "n_val",
+        "n_test",
+        "macro_f1",
+        "auroc",
+    ]
+    with detector_fold_csv.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fold_fields)
+        writer.writeheader()
+        writer.writerows(detector_fold_rows)
+
+    leakage_rows = []
+    for dataset in cfg["datasets"]:
+        split_rows = {
+            split: _harness_rows(cfg, dataset, split) for split in SPLITS
+        }
+        split_sets = {
+            split: {
+                "task": {row["task_id"] for row in rows},
+                "episode": {row["episode_id"] for row in rows},
+                "path": {row["trace_path"] for row in rows},
+            }
+            for split, rows in split_rows.items()
+        }
+        for left, right in (("train", "val"), ("train", "test"), ("val", "test")):
+            leakage_rows.append(
+                [
+                    dataset,
+                    f"{left} vs {right}",
+                    len(split_sets[left]["task"] & split_sets[right]["task"]),
+                    len(
+                        split_sets[left]["episode"]
+                        & split_sets[right]["episode"]
+                    ),
+                    len(split_sets[left]["path"] & split_sets[right]["path"]),
+                ]
+            )
+
+    lines = [
+        "# Experiment report: cross-harness model and harness identification",
+        "",
+        f"Experiment ID: `{cfg['experiment']['id']}`",
+        "",
+        "## What is in this artifact directory",
+        "",
+        "There are two different prediction tasks here:",
+        "",
+        "1. **Model identity:** predict which of the six models generated a "
+        "trace. Results include within-harness, cross-harness, and balanced "
+        "mixed-harness training.",
+        "2. **Harness identity:** predict MidScene versus browser-use using "
+        "leave-one-model-out (LOMO) evaluation. The held-out model contributes "
+        "no train or validation traces; its test traces measure transfer to an "
+        "unseen model.",
+        "",
+        "`A → B` always means train/validate on A and evaluate on B. "
+        "`mixed50` is a balanced task-level mixture of the two harnesses.",
+        "",
+        "## Model-identity headline: full features",
+        "",
+        "Macro-F1 is the unweighted mean of the six per-model F1 scores. Seed "
+        "SD is the classifier-seed sample standard deviation (`ddof=1`) and is "
+        "undefined for one seed. The interval bootstraps test traces after "
+        "averaging across available seeds.",
+        "",
+        *full_tables,
+        "## Model-identity feature ablations",
+        "",
+        "Timing-only and non-timing results are separated from the headline "
+        "full-feature grid. Check the `Seeds` column before making multi-seed "
+        "claims.",
+        "",
+        *ablation_tables,
+        "## Harness-identity LOMO status and results",
+        "",
+        f"Completed {completed_detector_runs}/{expected_detector_runs} expected "
+        "dataset × feature-view runs.",
+        "",
+        markdown_table(
+            [
+                "Dataset",
+                "Features",
+                "Seed",
+                "Status",
+                "Mean fold macro-F1",
+                "Fold macro-F1 SD",
+                "Mean fold AUROC",
+                "Fold AUROC SD",
+                "Pooled macro-F1",
+            ],
+            detector_rows,
+        ),
+        "",
+        "For LOMO, mean fold metrics weight each held-out model equally and "
+        "fold SD is the sample SD (`ddof=1`) across the six held-out models. "
+        "Pooled metrics combine all held-out test predictions. AUROC uses "
+        "`browser_use` as the positive class.",
+        "",
+        "## Leakage audit",
+        "",
+        "The frozen manifests contain the same matched tasks across harnesses "
+        "within a split, but no task, episode, or trace path is reused across "
+        "train, validation, and test. Each LOMO fold additionally removes the "
+        "held-out model from both training and validation.",
+        "",
+        markdown_table(
+            [
+                "Dataset",
+                "Split pair",
+                "Shared task IDs",
+                "Shared episode IDs",
+                "Shared trace paths",
+            ],
+            leakage_rows,
+        ),
+        "",
+        "Hyperparameter search currently uses ordinary stratified CV inside "
+        "the training split rather than grouping CV folds by task. This does "
+        "not expose validation or test traces, but group-by-task CV would be a "
+        "stricter tuning protocol.",
+        "",
+        "## Artifact map",
+        "",
+        f"- Model-identity result per seed: "
+        f"{relative_link(summary_root / 'results.csv', report_path)}",
+        f"- Model-identity seed aggregates: "
+        f"{relative_link(summary_root / 'seed_aggregates.csv', report_path)}",
+        f"- Per-model metrics: "
+        f"{relative_link(summary_root / 'per_model_metrics.csv', report_path)}",
+        f"- Per-model seed aggregates: "
+        f"{relative_link(summary_root / 'per_model_seed_aggregates.csv', report_path)}",
+        "- Individual identity classifiers/evaluations: `model_identity/`.",
+        "- LOMO harness-detector folds and summaries: "
+        "`harness_detection_lomo/`.",
+        f"- LOMO aggregate table: "
+        f"{relative_link(detector_summary_csv, report_path)}",
+        f"- One row per held-out-model fold: "
+        f"{relative_link(detector_fold_csv, report_path)}",
+        "- Frozen matched-task manifests: `frozen_task_splits/`.",
+        "",
+        "This file is regenerated by the cross-harness pipeline's `summarize` "
+        "command and after grid or harness-detector runs.",
+        "",
+    ]
+    report_path.write_text("\n".join(lines))
+    print(f"Wrote human-readable report → {report_path}")
+    return report_path
 
 
 def _harness_detector_dir(
@@ -1721,9 +2120,10 @@ def run_harness_detector_lomo(
         "class_names": list(harness_encoder.classes_),
         "folds": fold_results,
         "fold_macro_f1_mean": float(np.mean(macro_f1s)),
-        "fold_macro_f1_std": float(np.std(macro_f1s)),
+        "fold_macro_f1_std": _sample_std(macro_f1s),
         "fold_auroc_mean": float(np.mean(aurocs)),
-        "fold_auroc_std": float(np.std(aurocs)),
+        "fold_auroc_std": _sample_std(aurocs),
+        "fold_std_method": "sample_ddof_1",
         "pooled_test": pooled_metrics,
     }
     detector_dir.mkdir(parents=True, exist_ok=True)
@@ -1869,6 +2269,7 @@ def main() -> int:
         return 0
     if args.command == "summarize":
         summarize_results(cfg)
+        write_human_report(cfg)
         return 0
 
     classifier = args.classifier or cfg["classifiers"]["primary"]
@@ -1912,6 +2313,7 @@ def main() -> int:
                 xgb_device=args.xgb_device,
                 force=args.force,
             )
+        write_human_report(cfg)
     elif args.command == "run-ablation":
         for ablation_seed in args.seeds or [seed]:
             for feature_group in args.feature_groups:
@@ -1925,6 +2327,7 @@ def main() -> int:
                     xgb_device=args.xgb_device,
                     force=args.force,
                 )
+        write_human_report(cfg)
     elif args.command == "harness-detector":
         for dataset in args.datasets or cfg["datasets"].keys():
             run_harness_detector_lomo(
@@ -1937,6 +2340,7 @@ def main() -> int:
                 xgb_device=args.xgb_device,
                 force=args.force,
             )
+        write_human_report(cfg)
     return 0
 
 

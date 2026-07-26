@@ -1,0 +1,73 @@
+campaign:
+  experiment_config: experiments/temporal_generalization/configs/webshop_future_midscene_collection.yaml
+  harness: midscene
+  run_root: campaign_runs/experiments/temporal_generalization_webshop_midscene_future_v1
+  vllm_executable: /opt/anaconda/envs/known_ag/bin/vllm
+  local_workers: 10
+  openrouter_workers: 5
+  openrouter_minimum_credit: 2.0
+  max_collection_rounds: 2
+  max_existing_gpu_memory_mib: 2048
+  vllm_smoke_timeout_s: 120
+  continue_on_resource_blocked: true
+
+local_models:
+  - agent_id: qwen3_5_27b
+    vllm:
+      model: Qwen/Qwen3.5-27B
+      served_model_name: Qwen/Qwen3.5-27B
+      gpus: [0]
+      port: 3031
+      startup_timeout_s: 3600
+      args:
+        - --limit-mm-per-prompt.video
+        - "0"
+        - --reasoning-parser
+        - qwen3
+        - --enable-prefix-caching
+        - --max-model-len
+        - "163840"
+
+  - agent_id: gemma_4_26B_A4B_it
+    vllm:
+      model: google/gemma-4-26B-A4B-it
+      served_model_name: google/gemma-4-26B-A4B-it
+      # GPU 1 allows Qwen (GPU 0) and Gemma to be launched as two independent
+      # campaign processes before the four-GPU GLM pass.
+      gpus: [1]
+      port: 3030
+      startup_timeout_s: 3600
+      args:
+        - --max-model-len
+        - "32768"
+        - --gpu-memory-utilization
+        - "0.90"
+
+  - agent_id: glm_4.6v
+    vllm:
+      model: zai-org/GLM-4.6V
+      served_model_name: glm-4.6v
+      gpus: [0, 1, 2, 3]
+      port: 3031
+      startup_timeout_s: 3600
+      args:
+        - --tensor-parallel-size
+        - "4"
+        - --tool-call-parser
+        - glm45
+        - --reasoning-parser
+        - glm45
+        - --enable-auto-tool-choice
+        - --served-model-name
+        - glm-4.6v
+        - --enable-expert-parallel
+        - --allowed-local-media-path
+        - /
+        - --mm-encoder-tp-mode
+        - data
+        - --mm_processor_cache_type
+        - shm
+
+openrouter_models:
+  - agent_id: gemini_3_1
+    model: google/gemini-3.1-pro-preview

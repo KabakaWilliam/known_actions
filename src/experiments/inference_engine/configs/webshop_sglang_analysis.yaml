@@ -1,0 +1,89 @@
+experiment:
+  id: webshop_vllm_sglang_3model_v1
+  artifact_root: ../../../artifacts/experiments/inference_engine/webshop_sglang_full_v1
+  traces_dir: ../../../traces
+  sampling_seed: 42
+  classifier_seed: 42
+
+artifact_layout:
+  frozen_manifests: frozen_engine_splits
+  model_identity: engine_model_identity
+  identity_summaries: summaries
+
+agents:
+  - qwen3_5_27b
+  - glm_4.6v
+  - gemma_4_26B_A4B_it
+
+model_aliases:
+  qwen3_5_27b: [Qwen/Qwen3.5-27B]
+  glm_4.6v: [glm-4.6v, zai-org/GLM-4.6V]
+  gemma_4_26B_A4B_it: [google/gemma-4-26B-A4B-it]
+
+conditions:
+  vllm:
+    traces_dir: ../../../traces
+    harness: browser_use
+  sglang:
+    traces_dir: ../../../traces_experiments/inference_engine_webshop_sglang_full_v1
+    harness: browser_use
+
+datasets:
+  webshop:
+    expected_tasks: {train: 150, val: 75, test: 75}
+    minimum_common_tasks: {train: 150, val: 75, test: 75}
+
+feature_groups:
+  full:
+    include: "*"
+  timing_only:
+    include:
+      - total_duration_s
+      - t_first_action_ms
+      - mean_iei_ms
+      - std_iei_ms
+      - median_iei_ms
+      - p10_iei_ms
+      - p90_iei_ms
+      - iei_trend
+      - mean_click_iei_ms
+      - std_click_iei_ms
+      - mean_nav_iei_ms
+      - std_nav_iei_ms
+      - max_page_dwell_ms
+      - mean_key_iei_ms
+      - std_key_iei_ms
+  non_timing:
+    exclude:
+      - total_duration_s
+      - t_first_action_ms
+      - mean_iei_ms
+      - std_iei_ms
+      - median_iei_ms
+      - p10_iei_ms
+      - p90_iei_ms
+      - iei_trend
+      - mean_click_iei_ms
+      - std_click_iei_ms
+      - mean_nav_iei_ms
+      - std_nav_iei_ms
+      - max_page_dwell_ms
+      - mean_key_iei_ms
+      - std_key_iei_ms
+
+classifiers:
+  primary: XGBoost
+  enabled: [XGBoost]
+  cpu_jobs: 8
+  xgboost:
+    device: cpu
+    search_iterations: 40
+  random_forest:
+    search: false
+  lstm:
+    epochs: 1
+
+evaluation:
+  classifier_seeds: [40, 41, 42, 43, 44]
+  bootstrap_samples: 2000
+  bootstrap_confidence: 0.95

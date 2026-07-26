@@ -1,0 +1,28 @@
+run:
+  # Keep the future collection physically separate from the original corpus.
+  trace_output_dir: traces_experiments/temporal_generalization_webshop_midscene_future_v1
+  sif_path: agent.sif
+  episodes_per_combo: 1
+  timeout_s: 300
+  cleanup_grace_s: 30
+  shuffle_seed: 20260726
+  workers: 10
+
+harnesses:
+  - midscene
+
+agents:
+  - agent_id: qwen3_5_27b
+  - agent_id: glm_4.6v
+  - agent_id: gemma_4_26B_A4B_it
+  - agent_id: gemini_3_1
+
+datasets:
+  # Temporal evaluation replays only the original held-out test tasks. New
+  # traces must never be used for classifier tuning or fitting.
+  - name: webshop_test
+    source: datasets/webshop_test.json
+    n_questions: 75
+    seed: 42
+    start_url: "https://www.amazon.com"
+    task_type: shop

@@ -100,9 +100,14 @@ class PolicyNormalizationTests(unittest.TestCase):
                                     }
                                 ]
                             },
-                            "verification": {"correct": index % 2 == 0},
                             "error": None,
                         }
+                        # Exercise both the current browser-use schema and the
+                        # legacy verification field accepted by the analysis.
+                        if condition == "canonical":
+                            episode["task_success"] = index % 2 == 0
+                        else:
+                            episode["verification"] = {"correct": index % 2 == 0}
                         (run / f"{episode['meta']['episode_id']}.json").write_text(
                             json.dumps(episode)
                         )

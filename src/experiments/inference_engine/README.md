@@ -128,6 +128,13 @@ The full WebShop intervention namespace is:
 - reserved analysis output:
   `artifacts/experiments/inference_engine/webshop_sglang_full_v1/`
 
+The analysis pipeline writes
+`artifacts/experiments/inference_engine/webshop_sglang_full_v1/REPORT.md`
+following the repository-wide reporting contract in `experiments/README.md`.
+It distinguishes collection completeness from experimental results and labels
+vLLM→SGLang, within-engine, reverse-transfer, and mixed-engine comparisons
+explicitly.
+
 Each new campaign invocation creates a new timestamp/UUID campaign directory,
 but trace resume scans the fixed trace root. Restarting therefore preserves
 the prior logs and skips already valid traces.
@@ -212,3 +219,27 @@ The evaluation matrix is:
 Run XGBoost with full, timing-only, and non-timing features. A different number
 of H100s is a serving-topology change, not evidence of robustness to a
 different GPU architecture; report those claims separately.
+
+The complete collection has now passed the matched-task audit at 150/75/75
+tasks for all three models under both engines. Freeze and run the analysis:
+
+```bash
+cd /VData/linna4335/known_actions/src
+python -m experiments.inference_engine.pipeline audit
+python -m experiments.inference_engine.pipeline prepare
+
+# Fast first pass
+CUDA_VISIBLE_DEVICES=1 python -m experiments.inference_engine.pipeline run-grid \
+  --feature-groups full \
+  --seeds 42 \
+  --xgb-device cuda
+
+# Timing/non-timing views
+CUDA_VISIBLE_DEVICES=1 python -m experiments.inference_engine.pipeline run-grid \
+  --feature-groups timing_only non_timing \
+  --seeds 42 \
+  --xgb-device cuda
+```
+
+The commentable launcher `scripts/run_followup_experiments.sh` contains these
+commands plus the five-seed confirmation.

@@ -66,3 +66,9 @@ isolated under
 Task-success rates must be reported beside identification performance so that
 classifier degradation is not mistaken for a useful defense when task utility
 has collapsed.
+
+Every `run-grid` and `summarize` invocation regenerates the top-level
+`REPORT.md`. Start there: it labels the fixed-attacker, defense-aware, and
+mixed-attacker comparisons; separates five-seed headline results from
+single-seed ablations; includes per-model behavior and task utility; and links
+back to every machine-readable summary.

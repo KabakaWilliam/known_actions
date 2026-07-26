@@ -200,6 +200,7 @@ class CrossHarnessManifestTests(unittest.TestCase):
             ).read_text()
         )
         self.assertEqual(aggregate[0]["n_seeds"], 1)
+        self.assertIsNone(aggregate[0]["macro_f1_std"])
         self.assertIn("macro_f1_ci_lower", aggregate[0])
         summary_root = self.cfg["experiment"]["artifact_root"] / "summaries"
         per_model_rows = json.loads(
@@ -218,6 +219,7 @@ class CrossHarnessManifestTests(unittest.TestCase):
             set(self.agents),
         )
         self.assertTrue(all(row["n_seeds"] == 1 for row in per_model_aggregate))
+        self.assertTrue(all(row["f1_std"] is None for row in per_model_aggregate))
 
     def test_feature_groups_partition_full_schema_without_touching_traces(self):
         self._populate()
@@ -283,6 +285,7 @@ class CrossHarnessManifestTests(unittest.TestCase):
         )
         self.assertEqual(aggregate[0]["n_seeds"], 2)
         self.assertEqual(aggregate[0]["seeds"], [7, 8])
+        self.assertIsNotNone(aggregate[0]["macro_f1_std"])
 
     def test_lstm_quick_path_stays_on_cpu(self):
         self._populate()

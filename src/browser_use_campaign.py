@@ -1,4 +1,4 @@
-"""Run a resumable multi-model browser-use collection campaign.
+"""Run a resumable multi-model browser-harness collection campaign.
 
 Local models are served one at a time through vLLM or SGLang. Cloud models are
 run in the configured order. The existing orchestrator remains responsible for
@@ -727,7 +727,7 @@ class CampaignRunner:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run a resumable browser-use multi-model campaign."
+        description="Run a resumable multi-model browser-harness campaign."
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--only", nargs="+", default=None)
