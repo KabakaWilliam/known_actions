@@ -323,12 +323,112 @@ python trace_analyzer.py \
 
 | Split bucket | Used for |
 |---|---|
-| `_train` | Fitting RF, GB, LSTM |
-| `_val` | Early stopping (LSTM), hyperparameter selection |
+| `_train` | Fitting and sklearn training-fold cross-validation |
+| `_val` | LSTM hyperparameter selection and validation reports |
 | `_test` | Final held-out in-domain evaluation |
 | OOD | Cross-domain evaluation — never seen during training |
 
 Results are saved to `traces/models/{tag}/results.json` and include `test_report` and `ood_report` for each model.
+
+### Closed-set macro-F1 confidence intervals
+
+Closed-set evaluation uses 10 randomly generated classifier seeds by default
+and reports seed-averaged macro-F1 with a percentile bootstrap confidence
+interval over held-out test traces:
+
+```bash
+python trace_analyzer.py \
+    --traces-dir ./traces \
+    --train-datasets 2wikimultihop \
+    --tag wiki_ood_all \
+    --classifiers XGBoost \
+    --bootstrap-replicates 10000 \
+    --bootstrap-seed 2026
+```
+
+Ten seeds provide a useful estimate of run-to-run variation without the steep
+cost of 20 or more full refits. The exact generated seeds are recorded in the
+output. To supply fixed seeds instead, use
+`--classifier-seeds 42 43 44 45 46`; at least five unique seeds are required.
+Use `--classifier-seed-count N` to change the generated count, or
+`--no-closed-set-stats` to disable the multi-seed evaluation.
+`--load-classifier` remains evaluation-only and therefore skips multi-seed
+refits; run without it to produce closed-set seed statistics.
+
+Hyperparameters are selected once using cross-validation within the training
+split, then held fixed while the classifier is refit for each seed. The
+validation split remains a separate evaluation. Each bootstrap replicate
+resamples the held-out traces with replacement, uses the same sampled trace
+indices for all classifier seeds, computes per-model F1 and macro-F1 for each
+seed, and averages across seeds. The output reports the seed-averaged estimate,
+trace-bootstrap interval, per-seed scores, and seed standard deviation for each
+agent/model class under `macro_f1.per_class`, as well as the overall macro-F1
+summary.
+
+These statistics are written separately to
+`traces/classifiers/{tag}/closed_set_macro_f1.json`; the existing
+`results.json` format is unchanged.
+
+Run all four canonical XGBoost evaluations sequentially with
+`src/run_closed_set_stats.sh`. The aggregate output from the completed run is
+saved as `src/closed_set_macro_f1_results.json`.
+
+Pass that aggregate file to `plot_main_results.py` or `plot_hero_plot.py` with
+`--closed-set-stats` to render one asymmetric bootstrap error bar for each
+agent/model rather than a dataset-level interval band.
+
+### Open-set AUROC confidence intervals
+
+The leave-one-model-out open-set bars use the same 10-seed default. For each
+held-out model, `run_open_set_stats.py` refits XGBoost once per seed using the
+hyperparameters already selected in that run's `results.json`. It therefore
+avoids repeating hyperparameter search and leaves every existing
+`results.json` unchanged:
+
+```bash
+./run_open_set_stats.sh \
+    --traces-dir ./traces \
+    --datasets wiki frames webshop deepshop \
+    --bootstrap-replicates 10000 \
+    --bootstrap-seed 2026 \
+    --aggregate-output open_set_auroc_results.json
+```
+
+If `--classifier-seeds` is omitted, 10 unique seeds are generated with system
+randomness once and shared across the entire batch. The exact seeds are
+persisted in `traces/classifiers/open_set_auroc_batch.json` for safe resume and
+recorded in every output; pass at least five explicit values to reproduce a
+particular seed set. Ten is the recommended default because it captures useful
+run-to-run variation while keeping the 56 leave-one-model-out evaluations
+tractable.
+
+Each bootstrap replicate independently resamples the known test traces and the
+held-out model's unknown traces with replacement. The same pair of resamples is
+then used for all classifier seeds, AUROC is computed separately for every
+seed, and those AUROCs are averaged. This is a stratified paired bootstrap over
+evaluation traces; classifier-seed standard deviation is reported separately.
+The legacy open-set population is preserved: known samples come from the test
+split, while the unknown population contains all available traces for the
+held-out model.
+
+Per-run statistics are written separately to
+`traces/classifiers/{open_set_tag}/open_set_loo_{model}/open_set_auroc.json`.
+The combined result is `open_set_auroc_results.json`.
+
+Use the aggregate to render the figure variants with one interval per held-out
+model:
+
+```bash
+python plot_main_results.py \
+    --traces-dir ./traces \
+    --closed-set-stats closed_set_macro_f1_results.json \
+    --open-set-stats open_set_auroc_results.json
+
+python plot_open_set_summary.py \
+    --traces-dir ./traces \
+    --plot xgb_strip \
+    --open-set-stats open_set_auroc_results.json
+```
 
 ## Generating LaTeX tables
 

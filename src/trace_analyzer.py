@@ -35,11 +35,19 @@ def _is_valid_trace(episode: dict) -> bool:
     return bool((episode.get("dom_trace") or {}).get("events"))
 
 import numpy as np
+from sklearn.base import clone
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report, roc_auc_score
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.preprocessing import LabelEncoder, StandardScaler
+
+from closed_set_stats import (
+    DEFAULT_CLASSIFIER_SEED_COUNT,
+    generate_classifier_seeds,
+    summarize_macro_f1,
+    validate_classifier_seeds,
+)
 try:
     from xgboost import XGBClassifier
     _XGBOOST_AVAILABLE = True
@@ -740,8 +748,17 @@ def _make_tensors(sequences):
     return tok_tensors, time_tensors
 
 
-def _fit_lstm(seq_train, X_train, y_train, n_classes, hyperparams, n_epochs=_LSTM_N_EPOCHS):
+def _fit_lstm(seq_train, X_train, y_train, n_classes, hyperparams,
+              n_epochs=_LSTM_N_EPOCHS, random_seed: int | None = None):
     """Train one AgentLSTM config. X_train is a numpy array (N, n_rf_features)."""
+    data_loader_generator = None
+    if random_seed is not None:
+        torch.manual_seed(random_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(random_seed)
+        data_loader_generator = torch.Generator()
+        data_loader_generator.manual_seed(random_seed)
+
     device     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     hidden_dim = hyperparams["hidden_dim"]
     dropout    = hyperparams["dropout"]
@@ -751,7 +768,8 @@ def _fit_lstm(seq_train, X_train, y_train, n_classes, hyperparams, n_epochs=_LST
     rf_tensors = [torch.tensor(X_train[i], dtype=torch.float) for i in range(len(X_train))]
     lbl_tensor = torch.tensor(y_train, dtype=torch.long)
     dl = DataLoader(SequenceDataset(tok_tensors, time_tensors, rf_tensors, lbl_tensor),
-                    batch_size=_LSTM_BATCH_SIZE, shuffle=True, collate_fn=collate_fn)
+                    batch_size=_LSTM_BATCH_SIZE, shuffle=True, collate_fn=collate_fn,
+                    generator=data_loader_generator)
 
     model     = AgentLSTM(VOCAB_SIZE, _LSTM_EMBED_DIM, hidden_dim, _LSTM_N_LAYERS,
                           n_classes, n_rf_features=n_rf, dropout=dropout).to(device)
@@ -1168,7 +1186,46 @@ def train(trace_dir: Path, tag: str | None = None,
           classifiers: list[str] | None = None,
           random_delay_ms: float | None = None,
           test_random_delay_ms: float | None = None,
-          load_classifier_dir: Path | None = None) -> None:
+          load_classifier_dir: Path | None = None,
+          write_closed_set_stats: bool = True,
+          classifier_seeds: list[int] | None = None,
+          classifier_seed_count: int = DEFAULT_CLASSIFIER_SEED_COUNT,
+          bootstrap_replicates: int = 10_000,
+          bootstrap_confidence: float = 0.95,
+          bootstrap_seed: int = 2026) -> None:
+    classifier_seeds_were_explicit = classifier_seeds is not None
+    classifier_seed_source = None
+    if load_classifier_dir is not None:
+        if classifier_seeds_were_explicit:
+            raise ValueError(
+                "classifier_seeds cannot be used with load_classifier_dir; "
+                "multi-seed statistics require fresh refits"
+            )
+        # Preserve --load-classifier's evaluation-only contract. A single
+        # saved fit cannot provide variation across classifier seeds.
+        write_closed_set_stats = False
+    if not write_closed_set_stats and classifier_seeds_were_explicit:
+        raise ValueError(
+            "classifier_seeds cannot be used when closed-set statistics are disabled"
+        )
+    if write_closed_set_stats:
+        if classifier_seeds_were_explicit:
+            classifier_seeds = validate_classifier_seeds(classifier_seeds)
+            classifier_seed_source = "explicit"
+        else:
+            # Wait until the splits have been loaded before generating seeds:
+            # runs without a test split should retain their previous behavior
+            # and simply skip closed-set statistics.
+            classifier_seeds = None
+        if bootstrap_replicates < 1:
+            raise ValueError("bootstrap_replicates must be positive")
+        if not 0.0 < bootstrap_confidence < 1.0:
+            raise ValueError("bootstrap_confidence must be between 0 and 1")
+        if bootstrap_seed < 0:
+            raise ValueError("bootstrap_seed must be non-negative")
+    else:
+        classifier_seeds = None
+
     if hf_repo:
         splits, ds_names = load_from_hub(hf_repo, token=hf_token,
                                          train_datasets=train_datasets,
@@ -1223,6 +1280,13 @@ def train(trace_dir: Path, tag: str | None = None,
         warnings.warn("No val episodes found — skipping hyperparameter tuning, using defaults.")
     if not has_test:
         warnings.warn("No test episodes found — test_report will be null.")
+        if classifier_seeds_were_explicit:
+            raise ValueError(
+                "--classifier-seeds requires a non-empty held-out test split"
+            )
+    elif write_closed_set_stats and classifier_seeds is None:
+        classifier_seeds = generate_classifier_seeds(classifier_seed_count)
+        classifier_seed_source = "generated_system_random"
 
     # --- label encoder, feat_names, scaler: fit fresh or load from a prior run ---
     _loaded = None
@@ -1294,6 +1358,41 @@ def train(trace_dir: Path, tag: str | None = None,
     best_xgb      = None
     best_lr_l2    = None
     best_lr_lasso = None
+    closed_set_predictions: dict[str, dict[int, np.ndarray]] = {}
+
+    def _predict_classifier_seeds(
+        fitted_estimator,
+        X_fit: np.ndarray,
+        y_fit: np.ndarray,
+        X_eval: np.ndarray,
+        primary_predictions: np.ndarray,
+    ) -> dict[int, np.ndarray]:
+        """Refit fixed hyperparameters for each seed and predict test traces."""
+        predictions: dict[int, np.ndarray] = {}
+        fitted_params = fitted_estimator.get_params(deep=True)
+        fitted_seed = fitted_params.get("random_state")
+
+        for seed in classifier_seeds or []:
+            if fitted_seed == seed:
+                # GridSearchCV/RandomizedSearchCV already refit this exact
+                # estimator on the full training split.
+                predictions[seed] = np.asarray(primary_predictions, dtype=int)
+                continue
+
+            seeded_estimator = clone(fitted_estimator)
+            random_state_params = {
+                key: seed
+                for key in seeded_estimator.get_params(deep=True)
+                if key == "random_state" or key.endswith("__random_state")
+            }
+            if random_state_params:
+                seeded_estimator.set_params(**random_state_params)
+            seeded_estimator.fit(X_fit, y_fit)
+            predictions[seed] = np.asarray(
+                seeded_estimator.predict(X_eval),
+                dtype=int,
+            )
+        return predictions
 
     # (name, estimator, param_dist, uses_scaled_features, use_random_search)
     # RF: exhaustive grid — small grid, parallelises well with n_jobs=-1
@@ -1370,6 +1469,18 @@ def train(trace_dir: Path, tag: str | None = None,
                 ])
                 _auroc_str = f"  auroc={roc_auc_score(_in_labels, _scores):.3f}"
             print(f"{name:20s}  test_acc={test_report['accuracy']:.3f}{_auroc_str}")
+            if classifier_seeds is not None:
+                print(
+                    f"{name:20s}  closed-set seeds="
+                    f"{','.join(map(str, classifier_seeds))}"
+                )
+                closed_set_predictions[name] = _predict_classifier_seeds(
+                    best_clf,
+                    Xtr,
+                    y_train,
+                    Xte,
+                    test_preds,
+                )
 
         ood_reports = {}
         for oname in ood_base_names:
@@ -1535,6 +1646,45 @@ def train(trace_dir: Path, tag: str | None = None,
     else:
         clf_results["LSTM"] = None
 
+    if (
+        classifier_seeds is not None
+        and has_test
+        and clf_results.get("LSTM") is not None
+    ):
+        lstm_seed_predictions: dict[int, np.ndarray] = {}
+        lstm_hyperparams = (
+            clf_results["LSTM"].get("best_params")
+            or {"hidden_dim": 64, "dropout": 0.3}
+        )
+        clf_results["LSTM"]["best_params"] = lstm_hyperparams
+        print(
+            f"{'LSTM':20s}  closed-set seeds="
+            f"{','.join(map(str, classifier_seeds))}"
+        )
+        for seed in classifier_seeds:
+            seeded_lstm = _fit_lstm(
+                seq_train,
+                Xs_train,
+                list(y_train),
+                len(le.classes_),
+                lstm_hyperparams,
+                random_seed=seed,
+            )
+            _, seed_predictions = _eval_lstm(
+                seeded_lstm,
+                seq_test,
+                Xs_test,
+                list(y_test),
+            )
+            lstm_seed_predictions[seed] = np.asarray(
+                seed_predictions,
+                dtype=int,
+            )
+            del seeded_lstm
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        closed_set_predictions["LSTM"] = lstm_seed_predictions
+
     # --- prefix curve (early identification analysis) ---
     prefix_curve = None
     if prefix_eval and raw_events_test:
@@ -1619,8 +1769,9 @@ def train(trace_dir: Path, tag: str | None = None,
             "X_test":     X_test,
         }, f)
 
+    run_timestamp = datetime.now(timezone.utc).isoformat()
     results = {
-        "timestamp":      datetime.now(timezone.utc).isoformat(),
+        "timestamp":      run_timestamp,
         "tag":            tag,
         "train_datasets": sorted(ds_names["train"]),
         "val_datasets":   sorted(ds_names["val"]),
@@ -1642,6 +1793,76 @@ def train(trace_dir: Path, tag: str | None = None,
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\nSaved: {results_path}  {models_dir}/classifier.pkl  {models_dir}/lstm_model.pt")
+
+    if classifier_seeds is not None:
+        if not closed_set_predictions:
+            raise RuntimeError(
+                "no enabled classifier produced multi-seed test predictions"
+            )
+        closed_set_models = {}
+        for model_name, predictions_by_seed in closed_set_predictions.items():
+            summary = summarize_macro_f1(
+                y_test,
+                predictions_by_seed,
+                len(le.classes_),
+                class_names=list(le.classes_),
+                bootstrap_replicates=bootstrap_replicates,
+                confidence_level=bootstrap_confidence,
+                bootstrap_seed=bootstrap_seed,
+            )
+            closed_set_models[model_name] = {
+                "best_params": (
+                    (clf_results.get(model_name) or {}).get("best_params") or {}
+                ),
+                "macro_f1": summary,
+            }
+            ci = summary["confidence_interval"]
+            print(
+                f"{model_name:20s}  macro-F1={summary['estimate']:.3f}  "
+                f"{bootstrap_confidence:.0%} CI "
+                f"[{ci['lower']:.3f}, {ci['upper']:.3f}]"
+            )
+
+        closed_set_stats = {
+            "schema_version": 1,
+            "timestamp": run_timestamp,
+            "tag": tag,
+            "source_results_file": "results.json",
+            "test_datasets": sorted(ds_names["test"]),
+            "n_test_traces": len(y_test),
+            "class_names": list(le.classes_),
+            "n_classes": len(le.classes_),
+            "classifier_seeds": classifier_seeds,
+            "n_classifier_seeds": len(classifier_seeds),
+            "classifier_seed_source": classifier_seed_source,
+            "bootstrap": {
+                "unit": "held_out_test_trace",
+                "sampling": "ordinary_nonparametric_with_replacement",
+                "paired_across_classifier_seeds": True,
+                "replicates": bootstrap_replicates,
+                "confidence_level": bootstrap_confidence,
+                "seed": bootstrap_seed,
+                "interval": "percentile",
+            },
+            "aggregation": {
+                "metric": "macro_f1",
+                "across_classifier_seeds": "arithmetic_mean",
+                "hyperparameters": (
+                    "loaded_then_fixed_across_seeds"
+                    if _loaded is not None
+                    else (
+                        "selected_once_by_training_cv_then_fixed_across_seeds"
+                        if has_val
+                        else "defaults_fixed_across_seeds"
+                    )
+                ),
+            },
+            "models": closed_set_models,
+        }
+        closed_set_stats_path = models_dir / "closed_set_macro_f1.json"
+        with open(closed_set_stats_path, "w") as f:
+            json.dump(closed_set_stats, f, indent=2)
+        print(f"Saved: {closed_set_stats_path}")
 
     # --- print classification reports ---
     def _print_report(model_name, split_name, report):
@@ -1750,6 +1971,32 @@ if __name__ == "__main__":
                         default=None,
                         help="Subset of classifiers to train (default: all). "
                              "E.g. --classifiers XGBoost to train only XGBoost.")
+    parser.add_argument("--classifier-seeds", nargs="+", type=int, default=None,
+                        metavar="SEED",
+                        help="Classifier seeds for closed-set statistics. At least five unique "
+                             "values are required. If omitted, random seeds are generated and "
+                             "recorded in closed_set_macro_f1.json. Hyperparameters are selected "
+                             "once by training-set cross-validation and held fixed across seeds.")
+    parser.add_argument("--classifier-seed-count", type=int,
+                        default=DEFAULT_CLASSIFIER_SEED_COUNT, metavar="N",
+                        help="Number of random classifier seeds to generate when "
+                             "--classifier-seeds is omitted (default: 10; minimum: 5).")
+    parser.add_argument("--no-closed-set-stats", dest="write_closed_set_stats",
+                        action="store_false", default=True,
+                        help="Disable multi-seed closed-set macro-F1 and bootstrap output. "
+                             "By default every fresh training run with a test split writes "
+                             "closed_set_macro_f1.json; --load-classifier stays evaluation-only.")
+    parser.add_argument("--bootstrap-replicates", type=int, default=10_000,
+                        metavar="N",
+                        help="Number of held-out trace bootstrap replicates "
+                             "(default: 10000).")
+    parser.add_argument("--bootstrap-confidence", type=float, default=0.95,
+                        metavar="LEVEL",
+                        help="Bootstrap confidence level in (0, 1) (default: 0.95).")
+    parser.add_argument("--bootstrap-seed", type=int, default=2026,
+                        metavar="SEED",
+                        help="Random seed for test-trace bootstrap resampling "
+                             "(default: 2026).")
     parser.add_argument("--add-random-delay", type=float, default=None,
                         metavar="MAX_MS",
                         help="Corrupt timing features by adding a random delay drawn from "
@@ -1796,4 +2043,10 @@ if __name__ == "__main__":
           classifiers=cli.classifiers,
           random_delay_ms=cli.add_random_delay,
           test_random_delay_ms=cli.test_random_delay,
-          load_classifier_dir=cli.load_classifier)
+          load_classifier_dir=cli.load_classifier,
+          write_closed_set_stats=cli.write_closed_set_stats,
+          classifier_seeds=cli.classifier_seeds,
+          classifier_seed_count=cli.classifier_seed_count,
+          bootstrap_replicates=cli.bootstrap_replicates,
+          bootstrap_confidence=cli.bootstrap_confidence,
+          bootstrap_seed=cli.bootstrap_seed)

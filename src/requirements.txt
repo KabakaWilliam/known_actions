@@ -1,4 +1,5 @@
 scikit-learn
+xgboost
 numpy
 torch
 pyyaml

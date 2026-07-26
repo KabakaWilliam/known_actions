@@ -12,6 +12,10 @@ Usage:
     python plot_main_results.py
     python plot_main_results.py --classifier RandomForest --format pdf
     python plot_main_results.py --out /tmp/fig.png
+    python plot_main_results.py --panel closed \
+        --closed-set-stats closed_set_macro_f1_results.json
+    python plot_main_results.py --panel open \
+        --open-set-stats open_set_auroc_results.json
 """
 
 import argparse
@@ -24,6 +28,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.transforms as mtransforms
 import numpy as np
+
+from closed_set_figure_data import load_closed_set_intervals
+from open_set_figure_data import load_open_set_intervals
 
 matplotlib.rcParams.update({
     "pdf.fonttype": 42,
@@ -113,12 +120,41 @@ def _draw_panel(ax, agents: list[str], values: dict[str, float],
                 colour: str, xlim: tuple, xticks: list,
                 xlabel: str, show_names: bool, val_fmt: str,
                 chance_line: float | None = None,
-                bg: str | None = None):
+                bg: str | None = None,
+                class_intervals: dict[str, dict[str, float | int]] | None = None,
+                interval_scale: float = 100.0):
     if bg:
         ax.set_facecolor(bg)
     y = np.arange(len(agents))
     vals = [values.get(a, 0.0) for a in agents]
+
     ax.barh(y, vals, color=colour, height=0.72, zorder=3)
+    label_positions = list(vals)
+    if class_intervals is not None:
+        lower_errors = [
+            value - float(class_intervals[agent]["lower"]) * interval_scale
+            for agent, value in zip(agents, vals)
+        ]
+        upper_errors = [
+            float(class_intervals[agent]["upper"]) * interval_scale - value
+            for agent, value in zip(agents, vals)
+        ]
+        ax.errorbar(
+            vals,
+            y,
+            xerr=np.asarray([lower_errors, upper_errors]),
+            fmt="none",
+            ecolor="#303030",
+            elinewidth=1.15,
+            capsize=2.5,
+            capthick=1.15,
+            zorder=5,
+        )
+        label_positions = [
+            float(class_intervals[agent]["upper"]) * interval_scale
+            for agent in agents
+        ]
+
     if chance_line is not None:
         ax.axvline(chance_line, color=CHANCE_COLOUR, linestyle="--",
                    linewidth=1.2, zorder=4)
@@ -134,9 +170,9 @@ def _draw_panel(ax, agents: list[str], values: dict[str, float],
     for spine in ax.spines.values():
         spine.set_visible(False)
     pad = (xlim[1] - xlim[0]) * 0.01
-    for xi, v in zip(y, vals):
+    for xi, v, label_x in zip(y, vals, label_positions):
         if v > 0:
-            ax.text(v + pad, xi, val_fmt.format(v),
+            ax.text(label_x + pad, xi, val_fmt.format(v),
                     va="center", ha="left", fontsize=7, color="#444444")
 
     if show_names:
@@ -161,6 +197,23 @@ def main():
                         help="Which panel to plot (default: both).")
     parser.add_argument("--format", choices=["png", "pdf"], default="png")
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument(
+        "--closed-set-stats",
+        type=Path,
+        default=None,
+        metavar="JSON",
+        help="Aggregate closed-set macro-F1 JSON. When supplied, use each "
+             "model's seed-mean F1 and held-out-trace bootstrap CI.",
+    )
+    parser.add_argument(
+        "--open-set-stats",
+        type=Path,
+        default=None,
+        metavar="JSON",
+        help="Aggregate open-set AUROC JSON. When supplied, use each held-out "
+             "model's seed-mean AUROC and bootstrap CI over known test and "
+             "unknown held-out-model traces.",
+    )
     args = parser.parse_args()
 
     clf   = args.classifier
@@ -168,12 +221,87 @@ def main():
 
     closed_data = {tag: _load_closed(args.traces_dir, tag, clf) for tag, _ in CLOSED_TAGS}
     open_data   = {tag: _load_open(args.traces_dir, tag, clf)   for tag, _ in OPEN_TAGS}
+    if args.closed_set_stats is not None:
+        try:
+            closed_intervals = load_closed_set_intervals(
+                args.closed_set_stats,
+                clf,
+                expected_classes_by_tag={
+                    tag: set(values)
+                    for tag, values in closed_data.items()
+                },
+            )
+        except ValueError as exc:
+            sys.exit(f"ERROR: invalid --closed-set-stats: {exc}")
+        closed_data = {
+            tag: {
+                class_name: float(interval["estimate"])
+                for class_name, interval in class_intervals.items()
+            }
+            for tag, class_intervals in closed_intervals.items()
+        }
+    else:
+        closed_intervals = {}
+    closed_interval_levels = {
+        float(interval["level"])
+        for by_class in closed_intervals.values()
+        for interval in by_class.values()
+    }
+    if len(closed_interval_levels) > 1:
+        sys.exit("ERROR: closed-set per-model intervals use mixed confidence levels")
+    closed_interval_level = next(iter(closed_interval_levels), None)
+
+    if args.open_set_stats is not None:
+        try:
+            open_intervals = load_open_set_intervals(
+                args.open_set_stats,
+                clf,
+                expected_agents_by_tag={
+                    tag: set(values)
+                    for tag, values in open_data.items()
+                },
+            )
+        except ValueError as exc:
+            sys.exit(f"ERROR: invalid --open-set-stats: {exc}")
+        open_data = {
+            tag: {
+                agent: float(interval["estimate"])
+                for agent, interval in agent_intervals.items()
+            }
+            for tag, agent_intervals in open_intervals.items()
+        }
+    else:
+        open_intervals = {}
+    open_interval_levels = {
+        float(interval["level"])
+        for by_agent in open_intervals.values()
+        for interval in by_agent.values()
+    }
+    if len(open_interval_levels) > 1:
+        sys.exit("ERROR: open-set per-model intervals use mixed confidence levels")
+    open_interval_level = next(iter(open_interval_levels), None)
 
     all_agents: set[str] = set()
     for d in closed_data.values():
         all_agents.update(d.keys())
     if not all_agents:
         sys.exit("ERROR: no closed-set data found. Check --traces-dir and --classifier.")
+    if closed_intervals:
+        for tag, class_intervals in closed_intervals.items():
+            missing = all_agents - set(class_intervals)
+            if missing:
+                sys.exit(
+                    f"ERROR: closed-set stats for figure tag '{tag}' are "
+                    f"missing model class(es): {sorted(missing)}"
+                )
+    if open_intervals:
+        for tag, agent_intervals in open_intervals.items():
+            missing = all_agents - set(agent_intervals)
+            if missing:
+                sys.exit(
+                    f"ERROR: open-set stats for figure tag '{tag}' are "
+                    f"missing held-out model(s): {sorted(missing)}"
+                )
 
     anchor = closed_data.get(CLOSED_TAGS[0][0], {})
     agents = sorted(all_agents, key=lambda a: anchor.get(a, 0.0), reverse=True)
@@ -194,37 +322,53 @@ def main():
         for col, (tag, label) in enumerate(CLOSED_TAGS):
             colour = DATASET_COLOURS[col]
             vals_pct = {a: v * 100 for a, v in closed_data[tag].items()}
+            interval = closed_intervals.get(tag)
             _draw_panel(
                 row[col], agents, vals_pct,
                 colour=colour,
                 xlim=(0, 115), xticks=[0, 25, 50, 75, 100],
-                xlabel="Macro F1 (%)", show_names=(col == 0),
+                xlabel="Per-model F1 (%)", show_names=(col == 0),
                 val_fmt="{:.1f}", bg=BG_COLOUR,
+                class_intervals=interval,
             )
             row[col].set_title(label, fontsize=15, pad=8,
                                fontweight="bold", color=colour)
         title_fs = 19 if n_rows == 1 else 17
+        interval_note = (
+            f"  [whiskers: {closed_interval_level * 100:.0f}% bootstrap CI]"
+            if closed_interval_level is not None
+            else ""
+        )
         fig.text(0.5, 0.97,
-                 f"{'A.  ' if panel == 'both' else ''}Closed-set Attribution — Per-model F1 (%) ↑",
+                 f"{'A.  ' if panel == 'both' else ''}"
+                 f"Closed-set Attribution — Per-model F1 (%) ↑{interval_note}",
                  ha="center", fontsize=title_fs, fontweight="bold", color="#2a2a2a")
 
     if panel in ("both", "open"):
         row = axes_grid[1] if panel == "both" else axes_grid[0]
         for col, (tag, label) in enumerate(OPEN_TAGS):
             colour = DATASET_COLOURS[col]
+            interval = open_intervals.get(tag)
             _draw_panel(
                 row[col], agents, open_data[tag],
                 colour=colour,
                 xlim=(0, 1.12), xticks=[0.0, 0.25, 0.5, 0.75, 1.0],
                 xlabel="AUROC", show_names=(col == 0),
                 val_fmt="{:.2f}", chance_line=0.5, bg=BG_COLOUR,
+                class_intervals=interval, interval_scale=1.0,
             )
             row[col].set_title(label, fontsize=15, pad=8,
                                fontweight="bold", color=colour)
         title_y  = 0.465 if panel == "both" else 0.97
         title_fs = 19 if n_rows == 1 else 17
+        interval_note = (
+            f"; whiskers = {open_interval_level * 100:.0f}% bootstrap CI"
+            if open_interval_level is not None
+            else ""
+        )
         fig.text(0.5, title_y,
-                 f"{'B.  ' if panel == 'both' else ''}Open-set Unknown-Agent Detection — AUROC ↑  [dashed = chance 0.5]",
+                 f"{'B.  ' if panel == 'both' else ''}Open-set Unknown-Agent Detection — AUROC ↑  "
+                 f"[dashed = chance 0.5{interval_note}]",
                  ha="center", fontsize=title_fs, fontweight="bold", color="#2a2a2a")
 
     top = 0.96 if panel == "both" else 0.94
@@ -236,6 +380,11 @@ def main():
 
     fmt      = args.format
     stem     = {"both": "main_results", "closed": "main_results_closed", "open": "main_results_open"}[panel]
+    if (
+        (closed_intervals and panel in ("both", "closed"))
+        or (open_intervals and panel in ("both", "open"))
+    ):
+        stem += "_bootstrap_ci"
     out = (args.out.with_suffix(f".{fmt}") if args.out
            else Path("figures") / f"{stem}.{fmt}")
     out.parent.mkdir(parents=True, exist_ok=True)

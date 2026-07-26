@@ -14,6 +14,8 @@ Panel B: Scatter — closed-set Macro F1 vs open-set AUROC.
 Usage:
     python plot_open_set_summary.py
     python plot_open_set_summary.py --traces-dir src/traces --out my_fig.png
+    python plot_open_set_summary.py --plot xgb_strip \
+        --open-set-stats open_set_auroc_results.json
 """
 
 SCATTER_LEAD = (
@@ -51,6 +53,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
+
+from open_set_figure_data import load_open_set_intervals
 
 # ── Colours ────────────────────────────────────────────────────────────────────
 RF_COLOUR       = "#2196F3"   # blue
@@ -184,7 +188,7 @@ def load_all_datasets(traces_dir: Path) -> list[dict]:
 
 
 def load_datasets_xgb(traces_dir: Path, subdirs: list[tuple]) -> list[dict]:
-    """Return [{label, agent_aurocs: {agent_id: xgb_auroc}}, ...] for each subdir."""
+    """Return per-agent XGBoost AUROCs while retaining each experiment tag."""
     rows = []
     for subdir, label in subdirs:
         loo_dir = traces_dir / "classifiers" / subdir
@@ -204,7 +208,11 @@ def load_datasets_xgb(traces_dir: Path, subdirs: list[tuple]) -> list[dict]:
             if auroc is not None:
                 agent_aurocs[agent_id] = float(auroc)
         if agent_aurocs:
-            rows.append({"label": label, "agent_aurocs": agent_aurocs})
+            rows.append({
+                "tag": subdir,
+                "label": label,
+                "agent_aurocs": agent_aurocs,
+            })
     return rows
 
 
@@ -378,17 +386,40 @@ def plot_cross_dataset(ax, rows: list[dict]):
 
 # ── XGBoost-only per-agent strip ──────────────────────────────────────────────
 
-def plot_xgb_strip(ax, rows: list[dict]):
+def plot_xgb_strip(
+    ax,
+    rows: list[dict],
+    intervals_by_tag: dict[str, dict[str, dict[str, float]]] | None = None,
+):
+    intervals_by_tag = intervals_by_tag or {}
     seen_agents: set = set()
     for i, row in enumerate(rows):
         agents = list(row["agent_aurocs"].keys())
         vals   = [row["agent_aurocs"][a] for a in agents]
+        row_intervals = intervals_by_tag.get(row["tag"])
         rng    = np.random.default_rng(42 + i)
         jitter = rng.uniform(-0.18, 0.18, len(agents))
         for j, (agent, auroc) in enumerate(zip(agents, vals)):
             style = AGENT_STYLES.get(agent, {"marker": "o", "color": "#999999"})
             lbl   = AGENT_LABELS.get(agent, agent) if agent not in seen_agents else "_nolegend_"
             seen_agents.add(agent)
+            if row_intervals is not None:
+                interval = row_intervals[agent]
+                ax.errorbar(
+                    i + jitter[j],
+                    auroc,
+                    yerr=np.asarray([
+                        [auroc - float(interval["lower"])],
+                        [float(interval["upper"]) - auroc],
+                    ]),
+                    fmt="none",
+                    ecolor=style["color"],
+                    elinewidth=1.0,
+                    capsize=2.5,
+                    capthick=1.0,
+                    alpha=0.8,
+                    zorder=2.8,
+                )
             ax.scatter(i + jitter[j], auroc,
                        marker=style["marker"], color=style["color"],
                        s=55, alpha=0.85, zorder=3,
@@ -409,7 +440,18 @@ def plot_xgb_strip(ax, rows: list[dict]):
     ax.set_xticks(range(len(rows)))
     ax.set_xticklabels([r["label"] for r in rows], fontsize=10)
     ax.set_ylabel("Open-set AUROC", fontsize=10)
-    ax.set_ylim(0.3, 1.0)
+    if intervals_by_tag:
+        all_intervals = [
+            interval
+            for row in rows
+            for interval in intervals_by_tag[row["tag"]].values()
+        ]
+        lower = min(float(interval["lower"]) for interval in all_intervals)
+        upper = max(float(interval["upper"]) for interval in all_intervals)
+        ax.set_ylim(max(0.0, min(0.3, lower - 0.02)),
+                    min(1.04, max(1.0, upper + 0.02)))
+    else:
+        ax.set_ylim(0.3, 1.0)
     ax.yaxis.grid(True, linestyle="--", alpha=0.3)
     ax.set_axisbelow(True)
     _style_ax(ax)
@@ -443,7 +485,21 @@ def main():
     parser.add_argument("--closed-set-tag", default="wiki_ood_all",
                         help="Experiment tag for the closed-set F1 baseline used in Panel B "
                              "(default: wiki_ood_all).")
+    parser.add_argument(
+        "--open-set-stats",
+        type=Path,
+        default=None,
+        metavar="JSON",
+        help="Aggregate open-set AUROC JSON. In xgb_strip mode, use each "
+             "held-out model's seed-mean AUROC and bootstrap CI.",
+    )
     args = parser.parse_args()
+
+    if args.open_set_stats is not None and args.plot != "xgb_strip":
+        sys.exit(
+            "ERROR: --open-set-stats is currently supported only with "
+            "--plot xgb_strip."
+        )
 
     if args.plot == "cross_dataset":
         rows = load_all_datasets(args.traces_dir)
@@ -467,9 +523,46 @@ def main():
         rows = load_datasets_xgb(args.traces_dir, subdirs)
         if not rows:
             sys.exit("ERROR: no XGBoost open-set data found for any specified subdir.")
+        if args.open_set_stats is not None:
+            try:
+                open_intervals = load_open_set_intervals(
+                    args.open_set_stats,
+                    "XGBoost",
+                    expected_agents_by_tag={
+                        row["tag"]: set(row["agent_aurocs"])
+                        for row in rows
+                    },
+                )
+            except ValueError as exc:
+                sys.exit(f"ERROR: invalid --open-set-stats: {exc}")
+            rows = [
+                {
+                    **row,
+                    "agent_aurocs": {
+                        agent: float(interval["estimate"])
+                        for agent, interval in open_intervals[row["tag"]].items()
+                    },
+                }
+                for row in rows
+            ]
+        else:
+            open_intervals = {}
+        interval_levels = {
+            float(interval["level"])
+            for by_agent in open_intervals.values()
+            for interval in by_agent.values()
+        }
+        if len(interval_levels) > 1:
+            sys.exit("ERROR: open-set per-model intervals use mixed confidence levels")
+        interval_level = next(iter(interval_levels), None)
         fig, ax = plt.subplots(figsize=(8, 4))
-        plot_xgb_strip(ax, rows)
-        ax.set_title("Open-set unknown-agent detection (XGBoost)",
+        plot_xgb_strip(ax, rows, open_intervals)
+        interval_note = (
+            f" — whiskers: {interval_level * 100:.0f}% bootstrap CI"
+            if interval_level is not None
+            else ""
+        )
+        ax.set_title(f"Open-set unknown-agent detection (XGBoost){interval_note}",
                      fontsize=11, loc="left", fontweight="bold")
         handles, labels = ax.get_legend_handles_labels()
         fig.legend(handles, labels, loc="lower center",
@@ -479,7 +572,8 @@ def main():
         fmt     = args.format
         fig_dir = args.traces_dir.parent / "figures"
         fig_dir.mkdir(parents=True, exist_ok=True)
-        out = args.out or fig_dir / f"open_set_xgb_strip.{fmt}"
+        ci_suffix = "_bootstrap_ci" if open_intervals else ""
+        out = args.out or fig_dir / f"open_set_xgb_strip{ci_suffix}.{fmt}"
         out = out.with_suffix(f".{fmt}")
         fig.savefig(out, dpi=300, bbox_inches="tight")
         plt.close(fig)

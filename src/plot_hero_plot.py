@@ -18,6 +18,11 @@ Usage:
     # Specify classifier explicitly
     python create_hero_plot.py --classifier XGBoost \\
         --test-set-source wiki_ood_all frames_ood_all
+
+    # Add per-model seed means and test-trace bootstrap intervals
+    python create_hero_plot.py --classifier XGBoost \\
+        --test-set-source wiki_ood_all frames_ood_all \\
+        --closed-set-stats closed_set_macro_f1_results.json
 """
 
 import argparse
@@ -30,6 +35,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Patch
+
+from closed_set_figure_data import load_closed_set_intervals
 
 # ── Colours ────────────────────────────────────────────────────────────────────
 PROP_COLOUR = "#e9b59e"
@@ -85,7 +92,6 @@ DATASET_LABELS = {
     "universal_wiki_frames": "Wikipedia",
     "universal_ws_deepshop": "Amazon"
 }
-
 
 # ── Data helpers ───────────────────────────────────────────────────────────────
 
@@ -161,6 +167,14 @@ def main():
                         help="Output path (default: figures/{mode}_identifiability_barplots.{fmt}).")
     parser.add_argument("--format", choices=["png", "pdf"], default="png",
                         help="Output format (default: png). Ignored if --out specifies an extension.")
+    parser.add_argument(
+        "--closed-set-stats",
+        type=Path,
+        default=None,
+        metavar="JSON",
+        help="Aggregate closed-set macro-F1 JSON. In identity mode, use each "
+             "model's seed-mean F1 and held-out-trace bootstrap CI.",
+    )
     args = parser.parse_args()
 
     tags = args.test_set_source[:4]
@@ -172,6 +186,11 @@ def main():
                 f"ERROR: --mode family requires tags with '_family' in the name.\n"
                 f"  Offending: {bad}\n"
                 f"  Expected e.g. wiki_family_ood_all, webshop_family_ood_all"
+            )
+        if args.closed_set_stats is not None:
+            sys.exit(
+                "ERROR: --closed-set-stats contains identity-level intervals "
+                "and cannot be used with --mode family."
             )
 
     all_results = {t: load_results(args.traces_dir, t) for t in tags}
@@ -186,11 +205,48 @@ def main():
             sys.exit(f"ERROR: classifier '{clf}' not in '{t}'. Available: {available}")
 
     panels = {t: extract_per_class_f1(all_results[t], clf) for t in tags}
+    if args.closed_set_stats is not None:
+        try:
+            closed_intervals = load_closed_set_intervals(
+                args.closed_set_stats,
+                clf,
+                expected_classes_by_tag={
+                    tag: set(values)
+                    for tag, values in panels.items()
+                },
+            )
+        except ValueError as exc:
+            sys.exit(f"ERROR: invalid --closed-set-stats: {exc}")
+        panels = {
+            tag: {
+                class_name: float(interval["estimate"])
+                for class_name, interval in class_intervals.items()
+            }
+            for tag, class_intervals in closed_intervals.items()
+        }
+    else:
+        closed_intervals = {}
+    interval_levels = {
+        float(interval["level"])
+        for by_class in closed_intervals.values()
+        for interval in by_class.values()
+    }
+    if len(interval_levels) > 1:
+        sys.exit("ERROR: closed-set per-model intervals use mixed confidence levels")
+    interval_level = next(iter(interval_levels), None)
 
     # Union of all classes, sorted proprietary-first
     all_classes = set()
     for p in panels.values():
         all_classes.update(p.keys())
+    if closed_intervals:
+        for tag, class_intervals in closed_intervals.items():
+            missing = all_classes - set(class_intervals)
+            if missing:
+                sys.exit(
+                    f"ERROR: closed-set stats for figure tag '{tag}' are "
+                    f"missing model class(es): {sorted(missing)}"
+                )
     classes = sort_classes(list(all_classes), args.mode)
 
     label_map = FAMILY_LABELS if args.mode == "family" else AGENT_LABELS
@@ -208,15 +264,38 @@ def main():
 
     for idx, (tag, ax) in enumerate(zip(tags, axes)):
         values = [panels[tag].get(c, 0.0) * 100 for c in classes]
+        interval = closed_intervals.get(tag)
+
+        if interval:
+            lower_errors = [
+                value - float(interval[class_name]["lower"]) * 100.0
+                for class_name, value in zip(classes, values)
+            ]
+            upper_errors = [
+                float(interval[class_name]["upper"]) * 100.0 - value
+                for class_name, value in zip(classes, values)
+            ]
 
         bars = ax.bar(x, values, width=bar_w, color=colours,
                       edgecolor=EDGE_COLOUR, linewidth=0.9, zorder=3)
+        if interval:
+            ax.errorbar(
+                x,
+                values,
+                yerr=np.asarray([lower_errors, upper_errors]),
+                fmt="none",
+                ecolor="#303030",
+                elinewidth=1.15,
+                capsize=3,
+                capthick=1.15,
+                zorder=5,
+            )
 
         ax.text(0.01, 1.05, panel_letters[idx], transform=ax.transAxes,
                 fontsize=20, fontweight="bold", ha="left", va="bottom")
 
         ax.set_title(DATASET_LABELS.get(tag, tag), fontsize=24, pad=14)
-        ax.set_ylim(0, 101)
+        ax.set_ylim(0, 106 if interval else 101)
         ax.set_yticks(np.arange(0, 101, 20))
         ax.grid(axis="y", linestyle=(0, (3, 3)), linewidth=0.9, alpha=0.5, zorder=0)
         ax.set_axisbelow(True)
@@ -227,8 +306,13 @@ def main():
         for spine in ax.spines.values():
             spine.set_linewidth(1.0)
 
-        for rect, val in zip(bars, values):
-            ax.text(rect.get_x() + rect.get_width() / 2, rect.get_height() + 1.2,
+        label_heights = (
+            [float(interval[class_name]["upper"]) * 100.0 for class_name in classes]
+            if interval
+            else values
+        )
+        for rect, val, label_height in zip(bars, values, label_heights):
+            ax.text(rect.get_x() + rect.get_width() / 2, label_height + 1.2,
                     f"{val:.1f}", ha="center", va="bottom",
                     fontsize=8 if args.mode == "identity" else 9)
 
@@ -246,7 +330,8 @@ def main():
         for ax in axes[1::2]:
             ax.tick_params(axis="y", labelleft=True)
 
-    fig.supylabel("Macro F1 (%)", fontsize=20, x=0.03)
+    target_label = "Per-family F1 (%)" if args.mode == "family" else "Per-model F1 (%)"
+    fig.supylabel(target_label, fontsize=20, x=0.03)
 
     prop_label = "Proprietary families" if args.mode == "family" else "Proprietary agents"
     os_label   = "Open-source families"  if args.mode == "family" else "Open-source agents"
@@ -259,14 +344,29 @@ def main():
         fontsize=15, bbox_to_anchor=(0.5, -0.01),
     )
 
-    fig.tight_layout(rect=[0.04, 0.07, 1, 1])
+    bottom = 0.09 if interval_level is not None else 0.07
+    if interval_level is not None:
+        fig.text(
+            0.5,
+            0.055,
+            f"Whiskers: {interval_level * 100:.0f}% paired bootstrap CIs "
+            "over held-out traces",
+            ha="center",
+            va="center",
+            fontsize=11,
+            color="#444444",
+        )
+    fig.tight_layout(rect=[0.04, bottom, 1, 1])
 
     fmt = args.format
     if args.out:
         out = args.out
     else:
         suffix = "family" if args.mode == "family" else "identity"
-        out = Path("figures") / f"{suffix}_identifiability_barplots.{fmt}"
+        ci_suffix = "_bootstrap_ci" if closed_intervals else ""
+        out = Path("figures") / (
+            f"{suffix}_identifiability_barplots{ci_suffix}.{fmt}"
+        )
     out = out.with_suffix(f".{fmt}")
 
     out.parent.mkdir(parents=True, exist_ok=True)
