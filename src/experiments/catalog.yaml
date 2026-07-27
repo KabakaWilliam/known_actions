@@ -50,6 +50,19 @@ experiments:
     analysis_config: experiments/inference_engine/configs/webshop_sglang_analysis.yaml
     analysis_entrypoint: experiments.inference_engine.pipeline
     status: collection_complete_analysis_prepared
+  sglang_single_gpu_small_vlm_variants:
+    question: Does model-identification behavior transfer across vLLM and SGLang for two single-GPU vision-language checkpoints?
+    dataset: webshop
+    dataset_splits: {train: 150, val: 75, test: 75}
+    new_models: [qwen3vl_8b, glm_4.6v_flash]
+    control_models: [qwen3_5_27b, gemma_4_26B_A4B_it]
+    vllm_collection_config: experiments/inference_engine/configs/webshop_small_vlm_vllm_campaign.yaml
+    sglang_collection_config: experiments/inference_engine/configs/webshop_small_vlm_sglang_campaign.yaml
+    analysis_config: experiments/inference_engine/configs/webshop_sglang_small_vlm_4model_analysis.yaml
+    launcher: scripts/run_small_vlm_engine_experiment.sh
+    classifier_seeds: [40, 41, 42, 43, 44]
+    feature_groups: [full, timing_only, non_timing]
+    status: ready_for_collection
   midscene_model_arrival_update:
     question: How many labeled traces are needed to add a newly released model to the closed-set classifier?
     entrypoint: experiments.model_arrival.pipeline

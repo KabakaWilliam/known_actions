@@ -1,0 +1,51 @@
+campaign:
+  experiment_config: experiments/inference_engine/configs/webshop_small_vlm_vllm_collection.yaml
+  harness: browser_use
+  run_root: campaign_runs/experiments/inference_engine_webshop_small_vlm_vllm_v1
+  local_workers: 10
+  max_collection_rounds: 3
+  max_existing_gpu_memory_mib: 2048
+  vllm_smoke_timeout_s: 120
+  continue_on_resource_blocked: false
+
+# These are matched vLLM controls for the SGLang intervention. The historical
+# traces for these checkpoints used Midscene and therefore cannot serve as
+# Browser Use controls.
+local_models:
+  - agent_id: qwen3vl_8b
+    vllm:
+      model: Qwen/Qwen3-VL-8B-Instruct
+      served_model_name: Qwen/Qwen3-VL-8B-Instruct
+      gpus: [0]
+      port: 3030
+      startup_timeout_s: 3600
+      args:
+        - --gpu-memory-utilization
+        - "0.90"
+        - --limit-mm-per-prompt.video
+        - "0"
+        - --max_model_len
+        - "163840"
+
+  - agent_id: glm_4.6v_flash
+    vllm:
+      model: zai-org/GLM-4.6V-Flash
+      served_model_name: glm-4.6v
+      gpus: [1]
+      port: 3031
+      startup_timeout_s: 3600
+      args:
+        - --trust-remote-code
+        - --tool-call-parser
+        - glm45
+        - --reasoning-parser
+        - glm45
+        - --enable-auto-tool-choice
+        - --served-model-name
+        - glm-4.6v
+        - --allowed-local-media-path
+        - /
+        - --mm-encoder-tp-mode
+        - data
+        - --mm_processor_cache_type
+        - shm

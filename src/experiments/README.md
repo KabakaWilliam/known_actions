@@ -16,6 +16,7 @@ inputs and are never rewritten by analysis code.
 | Leave-p-models-out open-set scaling | `experiments.open_set_scaling.pipeline` | `open_set_scaling/configs/midscene_14model_leave_p_out.yaml` | `artifacts/experiments/open_set_scaling/midscene_14model_leave_p_out_v1/` |
 | SGLang engine intervention (full WebShop) | `browser_use_campaign.py` | `inference_engine/configs/webshop_sglang_smoke_campaign.yaml`, then `webshop_sglang_full_campaign.yaml` | `traces_experiments/inference_engine_webshop_sglang_{smoke,full}_v1/` |
 | vLLM↔SGLang analysis | `experiments.inference_engine.pipeline` | `inference_engine/configs/webshop_sglang_analysis.yaml` | `artifacts/experiments/inference_engine/webshop_sglang_full_v1/` |
+| Single-GPU Qwen3-VL-8B/GLM-Flash engine extension | `scripts/run_small_vlm_engine_experiment.sh` | `inference_engine/configs/webshop_sglang_small_vlm_4model_analysis.yaml` | `artifacts/experiments/inference_engine/webshop_sglang_small_vlm_4model_v1/` |
 | MidScene future-wave temporal generalization | `experiments.temporal_generalization.pipeline` | `temporal_generalization/configs/webshop_future_midscene_analysis.yaml` | `artifacts/experiments/temporal_generalization/webshop_midscene_future_wave_4model_v1/` |
 
 Historical single-harness, open-set, learning-curve, timing-jitter, and
@@ -46,6 +47,7 @@ never the source of truth. The current maintained reports are:
 - `artifacts/experiments/closed_set_scaling/midscene_14model_class_count_scaling_v1/REPORT.md`
 - `artifacts/experiments/open_set_scaling/midscene_14model_leave_p_out_v1/REPORT.md`
 - `artifacts/experiments/inference_engine/webshop_sglang_full_v1/REPORT.md`
+- `artifacts/experiments/inference_engine/webshop_sglang_small_vlm_4model_v1/REPORT.md`
 - `artifacts/experiments/temporal_generalization/webshop_midscene_future_wave_4model_v1/REPORT.md`
 
 Collection-only campaign logs are not a results report.

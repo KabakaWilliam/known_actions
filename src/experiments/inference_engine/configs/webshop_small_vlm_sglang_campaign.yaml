@@ -1,0 +1,56 @@
+campaign:
+  experiment_config: experiments/inference_engine/configs/webshop_small_vlm_sglang_collection.yaml
+  harness: browser_use
+  run_root: campaign_runs/experiments/inference_engine_webshop_small_vlm_sglang_v1
+  sglang_executable: /VData/linna4335/known_actions/.conda-runtime/envs/w_serve_sglang_0512/bin/python
+  local_workers: 10
+  max_collection_rounds: 3
+  max_existing_gpu_memory_mib: 2048
+  sglang_smoke_timeout_s: 120
+  continue_on_resource_blocked: false
+
+# SGLang equivalents of the vLLM serving controls:
+#   gpu-memory-utilization -> mem-fraction-static
+#   max_model_len          -> context-length
+#   limit video=0          -> limit-mm-data-per-request
+# vLLM's local-media, multimodal-cache, and encoder-TP flags have no direct
+# CLI equivalents in this SGLang release and are deliberately not invented.
+local_models:
+  - agent_id: qwen3vl_8b
+    sglang:
+      model: Qwen/Qwen3-VL-8B-Instruct
+      served_model_name: Qwen/Qwen3-VL-8B-Instruct
+      gpus: [0]
+      port: 3030
+      startup_timeout_s: 3600
+      args:
+        - --tp-size
+        - "1"
+        - --mem-fraction-static
+        - "0.90"
+        - --context-length
+        - "163840"
+        - --limit-mm-data-per-request
+        - '{"image": 1, "video": 0, "audio": 0}'
+        - --tool-call-parser
+        - qwen
+
+  - agent_id: glm_4.6v_flash
+    sglang:
+      model: zai-org/GLM-4.6V-Flash
+      served_model_name: glm-4.6v
+      gpus: [1]
+      port: 3031
+      startup_timeout_s: 3600
+      args:
+        - --tp-size
+        - "1"
+        - --mem-fraction-static
+        - "0.90"
+        - --trust-remote-code
+        - --tool-call-parser
+        - glm45
+        - --reasoning-parser
+        - glm45
+        - --limit-mm-data-per-request
+        - '{"image": 1, "video": 0, "audio": 0}'

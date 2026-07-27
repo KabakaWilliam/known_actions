@@ -52,7 +52,12 @@ def load_config(path: Path) -> dict[str, Any]:
         path, cfg["experiment"]["traces_dir"]
     )
     for condition in cfg["conditions"].values():
-        condition["traces_dir"] = _resolve(path, condition["traces_dir"])
+        configured_roots = condition.get("traces_dirs")
+        if configured_roots is None:
+            configured_roots = [condition["traces_dir"]]
+        condition["traces_dirs"] = [
+            _resolve(path, root) for root in configured_roots
+        ]
     cfg["_config_path"] = path
     return cfg
 
@@ -77,48 +82,50 @@ def _write_frozen(path: Path, rows: list[dict[str, Any]]) -> None:
 def scan(cfg: dict[str, Any]) -> dict[tuple, dict[str, Any]]:
     selected: dict[tuple, dict[str, Any]] = {}
     for engine, condition in cfg["conditions"].items():
-        root: Path = condition["traces_dir"]
         harness = condition.get("harness", "browser_use")
-        for agent_id in cfg["agents"]:
-            allowed_models = set(cfg["model_aliases"][agent_id])
-            for dataset in cfg["datasets"]:
-                for split in SPLITS:
-                    directory = root / agent_id / f"{dataset}_{split}" / harness
-                    for path in sorted(directory.glob("*/*.json")):
-                        try:
-                            episode = json.loads(path.read_text())
-                        except Exception:
-                            continue
-                        if not _trace_valid(episode, None):
-                            continue
-                        meta = episode.get("meta") or {}
-                        if str(meta.get("model_name") or "") not in allowed_models:
-                            continue
-                        question = str(meta.get("question") or "")
-                        if not question:
-                            continue
-                        task_id = _task_id(dataset, question)
-                        key = (engine, agent_id, dataset, split, task_id)
-                        candidate = {
-                            "episode_id": str(meta.get("episode_id") or path.stem),
-                            "task_id": task_id,
-                            "question": question,
-                            "agent_id": agent_id,
-                            "dataset": dataset,
-                            "split": split,
-                            "harness": engine,
-                            "engine": engine,
-                            "trace_path": str(path.resolve()),
-                            "collection_run_id": path.parent.name,
-                            "task_success": _task_success(episode),
-                            "_order": (
-                                str(meta.get("timestamp") or ""),
-                                path.stat().st_mtime_ns,
-                            ),
-                        }
-                        old = selected.get(key)
-                        if old is None or candidate["_order"] > old["_order"]:
-                            selected[key] = candidate
+        for root in condition["traces_dirs"]:
+            for agent_id in cfg["agents"]:
+                allowed_models = set(cfg["model_aliases"][agent_id])
+                for dataset in cfg["datasets"]:
+                    for split in SPLITS:
+                        directory = root / agent_id / f"{dataset}_{split}" / harness
+                        for path in sorted(directory.glob("*/*.json")):
+                            try:
+                                episode = json.loads(path.read_text())
+                            except Exception:
+                                continue
+                            if not _trace_valid(episode, None):
+                                continue
+                            meta = episode.get("meta") or {}
+                            if str(meta.get("model_name") or "") not in allowed_models:
+                                continue
+                            question = str(meta.get("question") or "")
+                            if not question:
+                                continue
+                            task_id = _task_id(dataset, question)
+                            key = (engine, agent_id, dataset, split, task_id)
+                            candidate = {
+                                "episode_id": str(
+                                    meta.get("episode_id") or path.stem
+                                ),
+                                "task_id": task_id,
+                                "question": question,
+                                "agent_id": agent_id,
+                                "dataset": dataset,
+                                "split": split,
+                                "harness": engine,
+                                "engine": engine,
+                                "trace_path": str(path.resolve()),
+                                "collection_run_id": path.parent.name,
+                                "task_success": _task_success(episode),
+                                "_order": (
+                                    str(meta.get("timestamp") or ""),
+                                    path.stat().st_mtime_ns,
+                                ),
+                            }
+                            old = selected.get(key)
+                            if old is None or candidate["_order"] > old["_order"]:
+                                selected[key] = candidate
     return selected
 
 
@@ -352,15 +359,15 @@ def write_report(cfg: dict[str, Any]) -> Path:
         ]
         for row in utility
     ]
+    agent_names = ", ".join(f"`{agent}`" for agent in cfg["agents"])
     lines = [
         "# Experiment report: vLLM versus SGLang",
         "",
         f"Experiment ID: `{cfg['experiment']['id']}`",
         "",
-        "This three-class WebShop experiment changes only the local inference "
-        "engine used to serve Qwen3.5-27B, GLM-4.6V, and Gemma-4-26B-A4B. "
-        "The browser-use harness, model checkpoints, and matched tasks remain "
-        "fixed.",
+        f"This {len(cfg['agents'])}-class WebShop experiment changes only the "
+        f"local inference engine used to serve {agent_names}. The browser-use "
+        "harness, model checkpoints, and matched tasks remain fixed.",
         "",
         "`A → B` means the classifier is trained and validated on traces "
         "collected with engine A and tested on matched traces from engine B. "

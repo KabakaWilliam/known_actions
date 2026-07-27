@@ -44,6 +44,10 @@ working-directory assumptions mid-campaign.
 - `scripts/run_temporal_generalization.sh`: commentable launcher for the
   test-only MidScene future-wave collection and frozen old-to-new WebShop
   temporal-generalization analysis.
+- `scripts/run_small_vlm_engine_experiment.sh`: commentable end-to-end launcher
+  for matched vLLM/SGLang Browser Use collection and XGBoost analysis of
+  Qwen3-VL-8B and GLM-4.6V-Flash. It runs the two single-GPU models in parallel
+  within each engine condition and keeps raw trace roots separate.
 
 ## Analysis and publication
 
