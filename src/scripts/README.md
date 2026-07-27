@@ -27,7 +27,9 @@ working-directory assumptions mid-campaign.
   detection, and timing/non-timing ablations.
 - `scripts/run_experiments_simple.sh`: preferred human-readable launcher. Set
   GPU numbers in its SETTINGS block, then comment/uncomment named experiments;
-  every selection is documented with its train/test protocol and purpose.
+  every selection is documented with its train/test protocol and purpose. It
+  includes cross-harness, policy-normalization, and leave-p-models-out open-set
+  analysis.
 - `scripts/run_experiment_queue.sh`: commentable, two-GPU queue for the final
   six-model XGBoost grid/ablations/harness detector and the four-model
   policy-normalization analysis. It excludes incomplete SGLang analysis.
@@ -36,7 +38,9 @@ working-directory assumptions mid-campaign.
   preparation pass.
 - `scripts/run_followup_experiments.sh`: commentable launcher for the
   14-model MidScene model-arrival update curve and the matched vLLM↔SGLang
-  WebShop grid. Each selection explains the reviewer question it answers.
+  WebShop grid. It also contains the 2-to-14-model closed-set scaling curve and
+  the leave-one-to-four-models-out open-set experiment. Each selection explains
+  the reviewer question it answers.
 - `scripts/run_temporal_generalization.sh`: commentable launcher for the
   test-only MidScene future-wave collection and frozen old-to-new WebShop
   temporal-generalization analysis.

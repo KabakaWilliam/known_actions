@@ -12,6 +12,8 @@ inputs and are never rewritten by analysis code.
 | Timing feature ablation | same, `run-ablation` | either config above | `<artifact_root>/model_identity/**/features=*/` |
 | Full-WebShop policy normalization | `experiments.policy_normalization.pipeline` | `policy_normalization/configs/webshop_full_analysis.yaml` | `artifacts/experiments/defenses/webshop_full_policy_normalization_4model_v1/` |
 | Closed-set model arrival | `experiments.model_arrival.pipeline` | `model_arrival/configs/midscene_14model.yaml` | `artifacts/experiments/model_arrival/midscene_14model_incremental_update_v1/` |
+| Closed-set class-count scaling | `experiments.closed_set_scaling.pipeline` | `closed_set_scaling/configs/midscene_14model_class_count.yaml` | `artifacts/experiments/closed_set_scaling/midscene_14model_class_count_scaling_v1/` |
+| Leave-p-models-out open-set scaling | `experiments.open_set_scaling.pipeline` | `open_set_scaling/configs/midscene_14model_leave_p_out.yaml` | `artifacts/experiments/open_set_scaling/midscene_14model_leave_p_out_v1/` |
 | SGLang engine intervention (full WebShop) | `browser_use_campaign.py` | `inference_engine/configs/webshop_sglang_smoke_campaign.yaml`, then `webshop_sglang_full_campaign.yaml` | `traces_experiments/inference_engine_webshop_sglang_{smoke,full}_v1/` |
 | vLLM↔SGLang analysis | `experiments.inference_engine.pipeline` | `inference_engine/configs/webshop_sglang_analysis.yaml` | `artifacts/experiments/inference_engine/webshop_sglang_full_v1/` |
 | MidScene future-wave temporal generalization | `experiments.temporal_generalization.pipeline` | `temporal_generalization/configs/webshop_future_midscene_analysis.yaml` | `artifacts/experiments/temporal_generalization/webshop_midscene_future_wave_4model_v1/` |
@@ -41,6 +43,8 @@ never the source of truth. The current maintained reports are:
 - `artifacts/experiments/cross_harness/main_6model_3local_3api_v2/REPORT.md`
 - `artifacts/experiments/defenses/webshop_full_policy_normalization_4model_v1/REPORT.md`
 - `artifacts/experiments/model_arrival/midscene_14model_incremental_update_v1/REPORT.md`
+- `artifacts/experiments/closed_set_scaling/midscene_14model_class_count_scaling_v1/REPORT.md`
+- `artifacts/experiments/open_set_scaling/midscene_14model_leave_p_out_v1/REPORT.md`
 - `artifacts/experiments/inference_engine/webshop_sglang_full_v1/REPORT.md`
 - `artifacts/experiments/temporal_generalization/webshop_midscene_future_wave_4model_v1/REPORT.md`
 

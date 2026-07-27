@@ -59,6 +59,24 @@ experiments:
     budgets: [1, 2, 5, 10, 20, 50, 100, all]
     classifier_seeds: [40, 41, 42, 43, 44]
     status: prepared_and_smoke_tested
+  midscene_closed_set_class_count_scaling:
+    question: How do identification performance and classifier complexity change as the closed set grows from 2 to 14 models?
+    entrypoint: experiments.closed_set_scaling.pipeline
+    config: experiments/closed_set_scaling/configs/midscene_14model_class_count.yaml
+    datasets: [2wikimultihop, webshop]
+    class_counts: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    seeds: [40, 41, 42, 43, 44]
+    status: ready_to_prepare
+  midscene_leave_p_models_out_open_set:
+    question: Does identification remain reliable when one to four models are simultaneously absent from training?
+    entrypoint: experiments.open_set_scaling.pipeline
+    config: experiments/open_set_scaling/configs/midscene_14model_leave_p_out.yaml
+    datasets: [2wikimultihop, webshop]
+    n_models: 14
+    unknown_counts: [1, 2, 3, 4]
+    classifier_seeds: [40, 41, 42, 43, 44]
+    metrics: [open_set_auroc, oscr, known_macro_f1, unknown_recall, balanced_open_set_macro_f1]
+    status: complete_3050_fits
   midscene_future_wave_temporal_generalization:
     question: Does an original-wave MidScene classifier retain model identity on a genuinely later matched test wave?
     entrypoint: experiments.temporal_generalization.pipeline

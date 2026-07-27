@@ -1,0 +1,45 @@
+experiment:
+  id: midscene_14model_class_count_scaling_v1
+  artifact_root: ../../../artifacts/experiments/closed_set_scaling/midscene_14model_class_count_scaling_v1
+  source_manifests: ../../../artifacts/experiments/model_arrival/midscene_14model_incremental_update_v1/frozen_midscene_splits
+
+agents:
+  - gpt_5_4
+  - claude_opus_4_6
+  - gemma-4-31B-it
+  - gemma_4_26B_A4B_it
+  - glm_4.6v
+  - glm_4.6v_flash
+  - qwen3vl_8b
+  - qwen3vl_30b_a3b
+  - qwen3_5_27b
+  - qwen3_5_9b
+  - uitars_7b
+  - gemini_3_1
+  - gemini_3_flash
+  - seed_2_lite
+
+datasets:
+  - 2wikimultihop
+  - webshop
+
+scaling:
+  class_counts: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+  # Each seed defines a nested randomized model ordering and the XGBoost RNG.
+  # SD therefore captures both class-composition and classifier variability.
+  seeds: [40, 41, 42, 43, 44]
+
+classifier:
+  name: XGBoost
+  device: cpu
+  parameters:
+    n_estimators: 300
+    learning_rate: 0.05
+    max_depth: 6
+    min_child_weight: 1
+    subsample: 0.8
+    colsample_bytree: 0.8
+    reg_lambda: 1.0
+    tree_method: hist
+
+feature_group: full

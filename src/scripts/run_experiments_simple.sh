@@ -7,8 +7,8 @@
 #   2. Comment/uncomment experiment names in SELECTED_EXPERIMENTS.
 #   3. Run: bash scripts/run_experiments_simple.sh
 #
-# Experiments assigned to the same GPU run sequentially. The cross-harness and
-# policy queues run in parallel when both families are selected.
+# Experiments assigned to the same GPU run sequentially. The cross-harness,
+# policy, and open-set queues run in parallel when their families are selected.
 
 set -Eeuo pipefail
 
@@ -16,10 +16,10 @@ set -Eeuo pipefail
 # SETTINGS — edit this section
 # =============================================================================
 
-# Physical GPU numbers. These are currently the two GPUs not used by the
-# Qwen/Gemma SGLang collectors.
+# Physical GPU numbers. Assign each selected family to an available GPU.
 CROSS_HARNESS_GPU=2
 POLICY_NORMALIZATION_GPU=3
+OPEN_SET_SCALING_GPU=0
 
 # Set to true on a fresh artifact directory. It runs read-only audits and
 # creates frozen manifests before launching classifiers.
@@ -49,6 +49,10 @@ SELECTED_EXPERIMENTS=(
 
   # Five-seed confirmation of the full-feature policy-normalization study.
   # policy_five_seeds
+
+  # Leave one to four of the 14 original MidScene models completely out of
+  # training/validation; identify known models and reject unseen models.
+  # open_set_scaling
 )
 
 # =============================================================================
@@ -65,6 +69,7 @@ LOG_ROOT="artifacts/experiment_runs/simple_${RUN_STAMP}"
 
 CROSS_CONFIG="experiments/cross_harness/configs/final_6model.yaml"
 POLICY_CONFIG="experiments/policy_normalization/configs/webshop_full_analysis.yaml"
+OPEN_SET_CONFIG="experiments/open_set_scaling/configs/midscene_14model_leave_p_out.yaml"
 
 mkdir -p "${LOG_ROOT}"
 
@@ -100,6 +105,10 @@ policy_selected() {
   selected policy_normalization || selected policy_five_seeds
 }
 
+open_set_selected() {
+  selected open_set_scaling
+}
+
 prepare_selected_inputs() {
   if cross_selected; then
     run_logged cross_harness_audit \
@@ -119,6 +128,16 @@ prepare_selected_inputs() {
     run_logged policy_normalization_prepare \
       "${PYTHON_BIN}" -m experiments.policy_normalization.pipeline \
       --config "${POLICY_CONFIG}" prepare
+  fi
+
+  if open_set_selected; then
+    run_logged open_set_scaling_audit \
+      "${PYTHON_BIN}" -m experiments.open_set_scaling.pipeline \
+      --config "${OPEN_SET_CONFIG}" audit
+
+    run_logged open_set_scaling_prepare \
+      "${PYTHON_BIN}" -m experiments.open_set_scaling.pipeline \
+      --config "${OPEN_SET_CONFIG}" prepare
   fi
 }
 
@@ -213,10 +232,21 @@ run_policy_queue() {
     --config "${POLICY_CONFIG}" summarize
 }
 
+run_open_set_queue() {
+  # Experiment: leave p=1,2,3,4 models out of both training and validation,
+  # then jointly measure known-model identification and unknown rejection.
+  run_logged open_set_scaling_full \
+    env CUDA_VISIBLE_DEVICES="${OPEN_SET_SCALING_GPU}" \
+    "${PYTHON_BIN}" -m experiments.open_set_scaling.pipeline \
+    --config "${OPEN_SET_CONFIG}" run-grid \
+    --xgb-device cuda
+}
+
 echo "Selected experiments:"
 printf '  - %s\n' "${SELECTED_EXPERIMENTS[@]}"
 echo "Cross-harness GPU: ${CROSS_HARNESS_GPU}"
 echo "Policy-normalization GPU: ${POLICY_NORMALIZATION_GPU}"
+echo "Open-set scaling GPU: ${OPEN_SET_SCALING_GPU}"
 echo "Logs: ${SRC_DIR}/${LOG_ROOT}"
 
 if [[ "${#SELECTED_EXPERIMENTS[@]}" -eq 0 ]]; then
@@ -248,6 +278,13 @@ if policy_selected; then
   PIDS+=("$!")
   NAMES+=("policy")
   echo "Launched policy-normalization queue as PID ${PIDS[-1]}"
+fi
+
+if open_set_selected; then
+  run_open_set_queue > >(tee "${LOG_ROOT}/open_set_queue.log") 2>&1 &
+  PIDS+=("$!")
+  NAMES+=("open_set")
+  echo "Launched open-set queue as PID ${PIDS[-1]}"
 fi
 
 FAILED=0
