@@ -23,6 +23,10 @@ _CI_METHOD = (
     "paired_stratified_percentile_bootstrap_over_"
     "known_test_and_unknown_held_out_model_traces"
 )
+_POOLED_UNKNOWN_CI_METHOD = (
+    "paired_stratified_percentile_bootstrap_over_"
+    "known_test_and_pooled_unknown_test_traces"
+)
 
 
 def _normalize_score_mapping(
@@ -247,3 +251,36 @@ def summarize_open_set_auroc(
         "n_known": int(n_known),
         "n_unknown": int(n_unknown),
     }
+
+
+def summarize_pooled_open_set_auroc(
+    known_scores_by_seed: Mapping[int, Sequence[float] | np.ndarray],
+    pooled_unknown_scores_by_seed: Mapping[
+        int,
+        Sequence[float] | np.ndarray,
+    ],
+    *,
+    bootstrap_replicates: int = 10_000,
+    confidence_level: float = 0.95,
+    bootstrap_seed: int = 2026,
+) -> dict:
+    """Summarize AUROC against one class of pooled unknown test traces.
+
+    The pooled unknown arrays may contain test traces from multiple held-out
+    models.  They form one negative-class bootstrap stratum: known test traces
+    and pooled unknown test traces are independently resampled with
+    replacement, while each pair of resamples is shared across classifier
+    seeds.
+
+    Apart from the confidence-interval method metadata, the result schema and
+    calculation are identical to :func:`summarize_open_set_auroc`.
+    """
+    result = summarize_open_set_auroc(
+        known_scores_by_seed,
+        pooled_unknown_scores_by_seed,
+        bootstrap_replicates=bootstrap_replicates,
+        confidence_level=confidence_level,
+        bootstrap_seed=bootstrap_seed,
+    )
+    result["confidence_interval"]["method"] = _POOLED_UNKNOWN_CI_METHOD
+    return result

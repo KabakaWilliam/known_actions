@@ -1,9 +1,13 @@
 import unittest
+from copy import deepcopy
 
 import numpy as np
 from sklearn.metrics import roc_auc_score
 
-from open_set_stats import summarize_open_set_auroc
+from open_set_stats import (
+    summarize_open_set_auroc,
+    summarize_pooled_open_set_auroc,
+)
 
 
 SEEDS = [11, 12, 13, 14, 15]
@@ -93,6 +97,62 @@ class OpenSetStatsTests(unittest.TestCase):
                 "known_test_and_unknown_held_out_model_traces"
             ),
         )
+
+    def test_pooled_unknown_entry_point_relabels_only_method_metadata(self):
+        known = {
+            seed: np.asarray([0.9, 0.5, 0.3]) - index * 0.01
+            for index, seed in enumerate(SEEDS)
+        }
+        # These arrays represent two held-out models concatenated into one
+        # unknown class before calling the summary function.
+        pooled_unknown = {
+            seed: np.asarray([0.8, 0.2, 0.4, 0.1]) + index * 0.01
+            for index, seed in enumerate(SEEDS)
+        }
+        kwargs = {
+            "bootstrap_replicates": 200,
+            "confidence_level": 0.9,
+            "bootstrap_seed": 17,
+        }
+
+        singleton = summarize_open_set_auroc(
+            known,
+            pooled_unknown,
+            **kwargs,
+        )
+        pooled = summarize_pooled_open_set_auroc(
+            known,
+            pooled_unknown,
+            **kwargs,
+        )
+
+        self.assertEqual(
+            pooled["confidence_interval"]["method"],
+            (
+                "paired_stratified_percentile_bootstrap_over_"
+                "known_test_and_pooled_unknown_test_traces"
+            ),
+        )
+        self.assertEqual(pooled["n_known"], 3)
+        self.assertEqual(pooled["n_unknown"], 4)
+
+        expected = deepcopy(singleton)
+        expected["confidence_interval"]["method"] = (
+            "paired_stratified_percentile_bootstrap_over_"
+            "known_test_and_pooled_unknown_test_traces"
+        )
+        self.assertEqual(pooled, expected)
+
+    def test_pooled_unknown_entry_point_preserves_validation(self):
+        with self.assertRaisesRegex(ValueError, "same classifier seeds"):
+            summarize_pooled_open_set_auroc(
+                _same_scores([0.9]),
+                {
+                    seed: [0.1]
+                    for seed in [11, 12, 13, 14, 16]
+                },
+                bootstrap_replicates=1,
+            )
 
     def test_known_trace_resamples_are_paired_across_seeds(self):
         # Relative to the singleton unknown score, the two seed families have

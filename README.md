@@ -430,6 +430,75 @@ python plot_open_set_summary.py \
     --open-set-stats open_set_auroc_results.json
 ```
 
+### Progressive pooled open-set holdouts
+
+The progressive experiment reruns the one-model holdouts and adds two- and
+three-model holdouts under a corrected, directly comparable protocol. For each
+subset, only valid test traces are used for evaluation: the held-in models form
+the known population and all held-out models are pooled into one binary
+unknown class. The classifier is trained on held-in training traces, and each
+subset selects among the same eight fixed XGBoost candidates using macro-F1 on
+held-in validation traces only; unknown and test traces never affect tuning.
+
+2WikiMultiHop and WebShop retain their recorded directory splits. FRAMES and
+DeepShop instead use a fixed SHA-256 assignment of exact question groups to
+50/25/25 train/validation/test splits, so every model's traces for a question
+remain in the same split (FRAMES is capped at 150/75/75 traces per model).
+Because the evaluation population differs from the earlier leave-one-out
+analysis, `k=1` is rerun alongside `k=2` and `k=3`.
+
+With 14 models there are `C(14, k)` possible subsets. The default design
+evaluates all 14 singletons and all 91 pairs, then takes a deterministic,
+model-balanced sample of 100 of the 364 triples. Increase
+`--max-subsets-per-size` to evaluate more triples. Ten classifier seeds are
+generated once, saved in the batch manifest, and shared across every dataset
+and subset.
+
+The resource-safe runner defaults numerical libraries to one thread,
+checkpoints every subset atomically, and resumes completed subsets when the
+same command is rerun. From the repository root, run:
+
+```bash
+src/run_open_set_multi_stats.sh \
+    --traces-dir ./traces \
+    --model-universe-stats src/open_set_auroc_results.json \
+    --datasets wiki frames webshop deepshop \
+    --holdout-sizes 1 2 3 \
+    --max-subsets-per-size 100 \
+    --subset-seed 2026 \
+    --classifier-seed-count 10 \
+    --tuning-candidates 8 \
+    --tuning-seed 42 \
+    --bootstrap-replicates 10000 \
+    --bootstrap-confidence 0.95 \
+    --bootstrap-seed 2026 \
+    --device cuda \
+    --n-jobs 1 \
+    --work-dir src/open_set_multi_checkpoints \
+    --aggregate-output src/open_set_multi_holdout_auroc_results.json
+```
+
+Each held-out subset receives its own pointwise 95% percentile CI by
+resampling known and pooled-unknown test traces within their strata, with the
+same bootstrap draws paired across classifier seeds. These are intervals for
+the individual subsets, not for the mean across subsets. The combined result
+is `src/open_set_multi_holdout_auroc_results.json`.
+
+Generate the progression and ranked-subset figure variants with:
+
+```bash
+python src/plot_open_set_holdout_progression.py \
+    --stats src/open_set_multi_holdout_auroc_results.json \
+    --out-dir src/figures \
+    --format both
+```
+
+This writes
+`src/figures/open_set_holdout_progression_bootstrap_ci.{png,pdf}` and
+`src/figures/open_set_holdout_ranked_bootstrap_ci.{png,pdf}`. Every plotted
+whisker is an individual subset's confidence interval; the progression plot's
+median and IQR summarize subsets descriptively and are not confidence bounds.
+
 ## Generating LaTeX tables
 
 ```bash
