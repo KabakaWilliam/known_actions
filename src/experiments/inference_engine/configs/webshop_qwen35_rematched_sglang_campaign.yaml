@@ -1,0 +1,34 @@
+campaign:
+  experiment_config: experiments/inference_engine/configs/webshop_qwen35_rematched_sglang_collection.yaml
+  harness: browser_use
+  run_root: campaign_runs/experiments/inference_engine_webshop_qwen35_rematched_sglang_v1
+  sglang_executable: /VData/linna4335/known_actions/.conda-runtime/envs/w_serve_sglang_0512/bin/python
+  local_workers: 10
+  max_collection_rounds: 3
+  max_existing_gpu_memory_mib: 2048
+  sglang_smoke_timeout_s: 120
+  continue_on_resource_blocked: false
+
+# Byte-identical serving arguments to the existing SGLang Qwen3.5-27B arm in
+# `webshop_sglang_full_collection.yaml`, so the recollected arm stays
+# comparable to the corpus it replaces. Only the GPU and port differ, because
+# this runs concurrently with the matched vLLM arm on GPU 1.
+local_models:
+  - agent_id: qwen3_5_27b
+    sglang:
+      model: Qwen/Qwen3.5-27B
+      served_model_name: Qwen/Qwen3.5-27B
+      gpus: [3]
+      port: 3033
+      startup_timeout_s: 3600
+      args:
+        - --tp-size
+        - "1"
+        - --mem-fraction-static
+        - "0.85"
+        - --context-length
+        - "163840"
+        - --tool-call-parser
+        - qwen
+        - --reasoning-parser
+        - qwen3

@@ -10,13 +10,14 @@ set -euo pipefail
 
 PYTHON_BIN="/opt/anaconda/envs/dispatch/bin/python"
 ANALYSIS_GPU="2"
+COLLECTION_GPUS=(0 1 2 3)
+export PYTHONUNBUFFERED=1
 
 SELECTED_OPERATIONS=(
-  # Matched Browser Use controls. Required for a clean engine comparison.
-  # collect_vllm
-
-  # SGLang treatment. Each checkpoint is served on one GPU.
-  # collect_sglang
+  # Resource-aware queue over GPUs 0-3: complete both GLM engine
+  # conditions first, then both Qwen conditions. It waits for randomly
+  # available GPUs and resumes existing traces.
+  collect_dynamic_engine_queue
 
   # Inspect matched coverage without writing frozen manifests.
   # audit
@@ -37,8 +38,6 @@ SELECTED_OPERATIONS=(
   # summarize
 )
 
-VLLM_CAMPAIGN="experiments/inference_engine/configs/webshop_small_vlm_vllm_campaign.yaml"
-SGLANG_CAMPAIGN="experiments/inference_engine/configs/webshop_small_vlm_sglang_campaign.yaml"
 ANALYSIS_CONFIG="experiments/inference_engine/configs/webshop_sglang_small_vlm_4model_analysis.yaml"
 
 selected() {
@@ -48,28 +47,6 @@ selected() {
     [[ "$operation" == "$wanted" ]] && return 0
   done
   return 1
-}
-
-run_collection_pair() {
-  local config="$1"
-  local label="$2"
-  local qwen_log="$LOG_ROOT/${label}_qwen3vl8.log"
-  local glm_log="$LOG_ROOT/${label}_glm_flash.log"
-
-  echo "Starting $label Qwen3-VL-8B and GLM-4.6V-Flash collections in parallel."
-  "$PYTHON_BIN" browser_use_campaign.py \
-    --config "$config" --only qwen3vl_8b --skip-openrouter \
-    2>&1 | tee "$qwen_log" &
-  local qwen_pid=$!
-  "$PYTHON_BIN" browser_use_campaign.py \
-    --config "$config" --only glm_4.6v_flash --skip-openrouter \
-    2>&1 | tee "$glm_log" &
-  local glm_pid=$!
-
-  local status=0
-  wait "$qwen_pid" || status=$?
-  wait "$glm_pid" || status=$?
-  return "$status"
 }
 
 run_analysis() {
@@ -87,12 +64,11 @@ LOG_ROOT="artifacts/experiment_runs/small_vlm_engine_$(date -u +%Y%m%d_%H%M%S)"
 mkdir -p "$LOG_ROOT"
 echo "Logs: $LOG_ROOT"
 
-if selected collect_vllm; then
-  run_collection_pair "$VLLM_CAMPAIGN" "vllm"
-fi
-
-if selected collect_sglang; then
-  run_collection_pair "$SGLANG_CAMPAIGN" "sglang"
+if selected collect_dynamic_engine_queue; then
+  "$PYTHON_BIN" scripts/schedule_small_vlm_collection.py \
+    --gpus "${COLLECTION_GPUS[@]}" \
+    --maximum-used-mib 2048 --maximum-utilization 10 --poll-seconds 30 \
+    | tee "$LOG_ROOT/dynamic_collection_queue.log"
 fi
 
 if selected audit; then

@@ -208,7 +208,11 @@ def prepare(cfg: dict[str, Any]) -> Path:
         "experiment_id": cfg["experiment"]["id"],
         "config": str(cfg["_config_path"]),
         "conditions": {
-            key: str(value["traces_dir"])
+            key: (
+                str(value["traces_dirs"][0])
+                if len(value["traces_dirs"]) == 1
+                else [str(path) for path in value["traces_dirs"]]
+            )
             for key, value in cfg["conditions"].items()
         },
         "manifest_sha256": hashes,

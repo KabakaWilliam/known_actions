@@ -63,6 +63,15 @@ experiments:
     classifier_seeds: [40, 41, 42, 43, 44]
     feature_groups: [full, timing_only, non_timing]
     status: ready_for_collection
+  sglang_glm_flash_replacement_3model:
+    question: How do vLLM-to-SGLang results change when full GLM-4.6V is replaced by GLM-4.6V-Flash?
+    dataset: webshop
+    models: [qwen3_5_27b, glm_4.6v_flash, gemma_4_26B_A4B_it]
+    analysis_config: experiments/inference_engine/configs/webshop_sglang_glm_flash_replacement_3model_analysis.yaml
+    artifact_root: artifacts/experiments/inference_engine/webshop_sglang_glm_flash_replacement_3model_v1
+    classifier_seeds: [40, 41, 42, 43, 44]
+    feature_groups: [full, timing_only, non_timing]
+    status: prepared_ready_for_classifier_grid
   midscene_model_arrival_update:
     question: How many labeled traces are needed to add a newly released model to the closed-set classifier?
     entrypoint: experiments.model_arrival.pipeline

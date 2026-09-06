@@ -20,8 +20,8 @@ local_models:
     sglang:
       model: Qwen/Qwen3-VL-8B-Instruct
       served_model_name: Qwen/Qwen3-VL-8B-Instruct
-      gpus: [0]
-      port: 3030
+      gpus: [3]
+      port: 3032
       startup_timeout_s: 3600
       args:
         - --tp-size
@@ -39,8 +39,8 @@ local_models:
     sglang:
       model: zai-org/GLM-4.6V-Flash
       served_model_name: glm-4.6v
-      gpus: [1]
-      port: 3031
+      gpus: [3]
+      port: 3033
       startup_timeout_s: 3600
       args:
         - --tp-size

@@ -1,6 +1,6 @@
 run:
   sif_path: agent.multi.sif
-  trace_output_dir: traces_experiments/inference_engine_webshop_small_vlm_sglang_v1
+  trace_output_dir: traces_experiments/inference_engine_webshop_qwen35_rematched_sglang_v1
   episodes_per_combo: 1
   timeout_s: 300
   cleanup_grace_s: 30
@@ -11,11 +11,15 @@ run:
 harnesses:
   - browser_use
 
+# The SGLang half of the rematched Qwen3.5-27B engine pair. The existing
+# SGLang arm under `inference_engine_webshop_sglang_full_v1` is not suspect,
+# but recollecting it concurrently with the vLLM arm removes the two-day gap
+# and puts both arms under identical machine-load conditions.
+#
+# The registry serves qwen3_5_27b on port 3031; this arm runs on 3033 so the
+# vLLM and SGLang servers can be up at the same time.
 agents:
-  - agent_id: qwen3vl_8b
-    env:
-      MIDSCENE_MODEL_BASE_URL: "http://127.0.0.1:3032/v1"
-  - agent_id: glm_4.6v_flash
+  - agent_id: qwen3_5_27b
     env:
       MIDSCENE_MODEL_BASE_URL: "http://127.0.0.1:3033/v1"
 

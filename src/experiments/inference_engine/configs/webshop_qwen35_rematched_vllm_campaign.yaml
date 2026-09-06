@@ -1,0 +1,43 @@
+campaign:
+  experiment_config: experiments/inference_engine/configs/webshop_qwen35_rematched_vllm_collection.yaml
+  harness: browser_use
+  run_root: campaign_runs/experiments/inference_engine_webshop_qwen35_rematched_vllm_v1
+  vllm_executable: /opt/anaconda/envs/dispatch/bin/vllm
+  local_workers: 10
+  max_collection_rounds: 3
+  max_existing_gpu_memory_mib: 2048
+  vllm_smoke_timeout_s: 120
+  continue_on_resource_blocked: false
+
+# Serving parameters are matched to the SGLang arm in
+# `webshop_qwen35_rematched_sglang_campaign.yaml` using the mapping already
+# documented for the small-VLM pair:
+#   gpu-memory-utilization  <-> mem-fraction-static   (0.85)
+#   max-model-len           <-> context-length        (163840)
+#   reasoning-parser qwen3  <-> reasoning-parser qwen3
+# `--enable-prefix-caching` is kept because SGLang enables RadixAttention
+# prefix caching by default, so setting it here makes the two engines'
+# caching behaviour comparable rather than divergent.
+#
+# SGLang's `--tool-call-parser qwen` has no invented vLLM counterpart here.
+# Browser-use drives local models through a forced `response_format` JSON
+# schema (`BROWSER_USE_DONT_FORCE_STRUCTURED_OUTPUT` is unset), not through
+# function calling, so the tool-call parser is inert on this code path.
+local_models:
+  - agent_id: qwen3_5_27b
+    vllm:
+      model: Qwen/Qwen3.5-27B
+      served_model_name: Qwen/Qwen3.5-27B
+      gpus: [1]
+      port: 3031
+      startup_timeout_s: 3600
+      args:
+        - --max-model-len
+        - "163840"
+        - --gpu-memory-utilization
+        - "0.85"
+        - --reasoning-parser
+        - qwen3
+        - --limit-mm-per-prompt.video
+        - "0"
+        - --enable-prefix-caching

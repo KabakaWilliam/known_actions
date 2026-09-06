@@ -198,15 +198,25 @@ browser workers in aggregate. Startup timeout is one hour per model, task
 timeout is 300 seconds, and up to three collection rounds recover failed
 episodes.
 
-Optionally collect Qwen3-VL on the 75 WebShop test tasks into the same trace
-root, with campaign state kept in a supplemental namespace:
+For the ad hoc four-model GLM-Flash + Qwen3-VL-30B extension, collect the
+missing SGLang half of Qwen3-VL-30B over all 300 WebShop tasks. Its existing
+Browser Use vLLM traces are reused:
 
 ```bash
 cd /VData/linna4335/known_actions/src
 python browser_use_campaign.py \
-  --config experiments/inference_engine/configs/webshop_sglang_qwen3vl_supplemental_campaign.yaml \
+  --config experiments/inference_engine/configs/webshop_sglang_qwen3vl30_full_campaign.yaml \
+  --only qwen3vl_30b_a3b \
+  --gpus 0 3 \
   --skip-openrouter
 ```
+
+This Qwen3-VL-30B campaign uses SGLang tensor parallelism across two GPUs and
+writes to
+`traces_experiments/inference_engine_webshop_sglang_qwen3vl30_v1/`.
+After collection, use
+`configs/webshop_sglang_glm_flash_qwen3vl30_4model_analysis.yaml`; its artifact
+root is isolated from both the original three-model and small-VLM analyses.
 
 The evaluation matrix is:
 

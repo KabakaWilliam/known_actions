@@ -1,6 +1,6 @@
 run:
   sif_path: agent.multi.sif
-  trace_output_dir: traces_experiments/inference_engine_webshop_small_vlm_sglang_v1
+  trace_output_dir: traces_experiments/inference_engine_webshop_sglang_qwen3vl30_v1
   episodes_per_combo: 1
   timeout_s: 300
   cleanup_grace_s: 30
@@ -12,12 +12,9 @@ harnesses:
   - browser_use
 
 agents:
-  - agent_id: qwen3vl_8b
+  - agent_id: qwen3vl_30b_a3b
     env:
-      MIDSCENE_MODEL_BASE_URL: "http://127.0.0.1:3032/v1"
-  - agent_id: glm_4.6v_flash
-    env:
-      MIDSCENE_MODEL_BASE_URL: "http://127.0.0.1:3033/v1"
+      MIDSCENE_MODEL_BASE_URL: "http://127.0.0.1:3034/v1"
 
 datasets:
   - name: webshop_train

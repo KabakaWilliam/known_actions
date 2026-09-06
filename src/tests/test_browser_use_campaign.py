@@ -79,3 +79,24 @@ def test_sglang_command_uses_isolated_python():
         "--tp-size",
         "1",
     ]
+
+
+def test_override_local_gpus_changes_only_selected_model():
+    runner = _runner()
+    runner.config = {
+        "local_models": [
+            {
+                "agent_id": "first",
+                "vllm": {"model": "example/first", "gpus": [0]},
+            },
+            {
+                "agent_id": "second",
+                "sglang": {"model": "example/second", "gpus": [1]},
+            },
+        ]
+    }
+
+    runner.override_local_gpus("second", [2, 3])
+
+    assert runner.config["local_models"][0]["vllm"]["gpus"] == [0]
+    assert runner.config["local_models"][1]["sglang"]["gpus"] == [2, 3]

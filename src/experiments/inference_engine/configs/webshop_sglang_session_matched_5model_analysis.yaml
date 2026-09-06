@@ -1,0 +1,111 @@
+experiment:
+  id: webshop_vllm_sglang_session_matched_5model_v1
+  artifact_root: ../../../artifacts/experiments/inference_engine/webshop_sglang_session_matched_5model_v1
+  traces_dir: ../../../traces
+  sampling_seed: 42
+  classifier_seed: 42
+
+artifact_layout:
+  frozen_manifests: frozen_engine_splits
+  model_identity: engine_model_identity
+  identity_summaries: summaries
+
+# The four session-matched agents of
+# `webshop_sglang_session_matched_4model_analysis.yaml`, plus Qwen3.5-27B on
+# its rematched arms. Both Qwen3.5 arms were recollected on 2026-07-28,
+# concurrently on GPUs 1 and 3, by the current committed browser-use runner.
+# Their median t_first_action_ms is 4758 ms (vLLM) against 4748 ms (SGLang) --
+# a 10 ms gap, versus the 4203 ms gap of the superseded arms.
+agents:
+  - glm_4.6v_flash
+  - glm_4.6v
+  - gemma_4_26B_A4B_it
+  - qwen3vl_8b
+  - qwen3_5_27b
+
+model_aliases:
+  glm_4.6v_flash: [glm-4.6v, zai-org/GLM-4.6V-Flash]
+  glm_4.6v: [glm-4.6v, zai-org/GLM-4.6V]
+  gemma_4_26B_A4B_it: [google/gemma-4-26B-A4B-it]
+  qwen3vl_8b: [Qwen/Qwen3-VL-8B-Instruct]
+  qwen3_5_27b: [Qwen/Qwen3.5-27B]
+
+# `traces/` still holds the superseded Qwen3.5-27B vLLM arm (run
+# 20260725_032757). `scan()` keys on (engine, agent, dataset, split, task_id)
+# and keeps the candidate with the greatest (meta.timestamp, file mtime), so
+# the 2026-07-28 rematched traces win over the 2026-07-25 originals for every
+# task. The prepare step is verified by asserting that every frozen
+# qwen3_5_27b row resolves to a `..._qwen35_rematched_...` path.
+conditions:
+  vllm:
+    traces_dirs:
+      - ../../../traces
+      - ../../../traces_experiments/inference_engine_webshop_small_vlm_vllm_v1
+      - ../../../traces_experiments/inference_engine_webshop_qwen35_rematched_vllm_v1
+    harness: browser_use
+  sglang:
+    traces_dirs:
+      - ../../../traces_experiments/inference_engine_webshop_sglang_full_v1
+      - ../../../traces_experiments/inference_engine_webshop_small_vlm_sglang_v1
+      - ../../../traces_experiments/inference_engine_webshop_qwen35_rematched_sglang_v1
+    harness: browser_use
+
+datasets:
+  webshop:
+    expected_tasks: {train: 150, val: 75, test: 75}
+    minimum_common_tasks: {train: 150, val: 75, test: 75}
+
+feature_groups:
+  full:
+    include: "*"
+  timing_only:
+    include:
+      - total_duration_s
+      - t_first_action_ms
+      - mean_iei_ms
+      - std_iei_ms
+      - median_iei_ms
+      - p10_iei_ms
+      - p90_iei_ms
+      - iei_trend
+      - mean_click_iei_ms
+      - std_click_iei_ms
+      - mean_nav_iei_ms
+      - std_nav_iei_ms
+      - max_page_dwell_ms
+      - mean_key_iei_ms
+      - std_key_iei_ms
+  non_timing:
+    exclude:
+      - total_duration_s
+      - t_first_action_ms
+      - mean_iei_ms
+      - std_iei_ms
+      - median_iei_ms
+      - p10_iei_ms
+      - p90_iei_ms
+      - iei_trend
+      - mean_click_iei_ms
+      - std_click_iei_ms
+      - mean_nav_iei_ms
+      - std_nav_iei_ms
+      - max_page_dwell_ms
+      - mean_key_iei_ms
+      - std_key_iei_ms
+
+classifiers:
+  primary: XGBoost
+  enabled: [XGBoost]
+  cpu_jobs: 8
+  xgboost:
+    device: cpu
+    search_iterations: 40
+  random_forest:
+    search: false
+  lstm:
+    epochs: 1
+
+evaluation:
+  classifier_seeds: [40, 41, 42, 43, 44]
+  bootstrap_samples: 2000
+  bootstrap_confidence: 0.95

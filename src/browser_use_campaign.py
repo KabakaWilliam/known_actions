@@ -143,6 +143,21 @@ class CampaignRunner:
             )
         return self.agent_env[agent_id]
 
+    def override_local_gpus(self, agent_id: str, gpus: list[int]) -> None:
+        """Override one selected local model's GPU assignment at launch time."""
+        matches = [
+            spec
+            for spec in self.config.get("local_models", [])
+            if spec.get("agent_id") == agent_id
+        ]
+        if len(matches) != 1:
+            raise CampaignError(
+                f"cannot override GPUs for {agent_id}: expected one local model "
+                f"entry, found {len(matches)}"
+            )
+        _engine, engine_config = self._local_engine(matches[0])
+        engine_config["gpus"] = [int(gpu) for gpu in gpus]
+
     @staticmethod
     def _local_engine(
         spec: dict[str, Any],
@@ -731,6 +746,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--only", nargs="+", default=None)
+    parser.add_argument(
+        "--gpus",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Override GPUs for exactly one local model selected with --only.",
+    )
     parser.add_argument("--skip-local", action="store_true")
     parser.add_argument("--skip-openrouter", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -740,6 +762,10 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     runner = CampaignRunner(args.config, dry_run=args.dry_run)
+    if args.gpus:
+        if not args.only or len(args.only) != 1:
+            raise CampaignError("--gpus requires exactly one model in --only")
+        runner.override_local_gpus(args.only[0], args.gpus)
 
     def handle_signal(_signum, _frame):
         runner.stop_owned_processes()

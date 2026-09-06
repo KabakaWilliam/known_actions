@@ -46,8 +46,9 @@ working-directory assumptions mid-campaign.
   temporal-generalization analysis.
 - `scripts/run_small_vlm_engine_experiment.sh`: commentable end-to-end launcher
   for matched vLLM/SGLang Browser Use collection and XGBoost analysis of
-  Qwen3-VL-8B and GLM-4.6V-Flash. It runs the two single-GPU models in parallel
-  within each engine condition and keeps raw trace roots separate.
+  Qwen3-VL-8B and GLM-4.6V-Flash. Its resource-aware queue watches GPUs 0-3,
+  runs both GLM engine conditions before both Qwen conditions, and resumes
+  existing traces while keeping raw engine roots separate.
 
 ## Analysis and publication
 
